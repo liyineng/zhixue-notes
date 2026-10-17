@@ -55,6 +55,17 @@ CREATE TABLE IF NOT EXISTS notes (
     updated_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_notes_notebook ON notes(notebook_id);
+
+CREATE TABLE IF NOT EXISTS chat_exchanges (
+    sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+    id TEXT NOT NULL UNIQUE,
+    notebook_id TEXT NOT NULL REFERENCES notebooks(id),
+    question TEXT NOT NULL,
+    result_json TEXT NOT NULL DEFAULT '{}',
+    status TEXT NOT NULL CHECK(status IN ('pending', 'complete', 'error')),
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_chat_notebook ON chat_exchanges(notebook_id, sequence);
 """
 
 DEFAULT_SETTINGS: dict[str, Any] = {
@@ -89,6 +100,8 @@ def connection() -> Iterator[sqlite3.Connection]:
 def init_db() -> None:
     with connection() as conn:
         conn.executescript(SCHEMA)
+        conn.execute("""UPDATE chat_exchanges SET status='error', result_json=? WHERE status='pending'""",
+                     (json.dumps({"detail": "上次生成未完成，请重新提问。"}, ensure_ascii=False),))
         conn.execute(
             "INSERT OR IGNORE INTO notebooks VALUES (?, ?, ?)",
             ("default", "我的课程", datetime.now(UTC).isoformat()),
@@ -270,8 +283,9 @@ def delete_empty_notebook(notebook_id: str) -> bool:
     with connection() as conn:
         result = conn.execute("""DELETE FROM notebooks WHERE id=? AND id!='default'
             AND NOT EXISTS (SELECT 1 FROM documents WHERE notebook_id=?)
-            AND NOT EXISTS (SELECT 1 FROM notes WHERE notebook_id=?)""",
-            (notebook_id, notebook_id, notebook_id))
+            AND NOT EXISTS (SELECT 1 FROM notes WHERE notebook_id=?)
+            AND NOT EXISTS (SELECT 1 FROM chat_exchanges WHERE notebook_id=?)""",
+            (notebook_id, notebook_id, notebook_id, notebook_id))
         return result.rowcount == 1
 
 
@@ -313,3 +327,33 @@ def save_note(note_id: str, notebook_id: str, title: str, content: str,
 def delete_note(note_id: str) -> None:
     with connection() as conn:
         conn.execute("DELETE FROM notes WHERE id=?", (note_id,))
+
+
+def start_exchange(exchange_id: str, notebook_id: str, question: str) -> None:
+    with connection() as conn:
+        conn.execute("""INSERT INTO chat_exchanges(id, notebook_id, question, status, created_at)
+                        VALUES (?, ?, ?, 'pending', ?)""",
+                     (exchange_id, notebook_id, question, datetime.now(UTC).isoformat()))
+
+
+def finish_exchange(exchange_id: str, result: dict[str, Any], *, error: bool = False) -> None:
+    with connection() as conn:
+        conn.execute("UPDATE chat_exchanges SET result_json=?, status=? WHERE id=?",
+                     (json.dumps(result, ensure_ascii=False), "error" if error else "complete", exchange_id))
+
+
+def list_exchanges(notebook_id: str) -> list[dict[str, Any]]:
+    with connection() as conn:
+        rows = conn.execute("SELECT * FROM chat_exchanges WHERE notebook_id=? ORDER BY sequence",
+                            (notebook_id,)).fetchall()
+    result = []
+    for row in rows:
+        item = _row_to_dict(row)
+        item["result"] = json.loads(item.pop("result_json"))
+        result.append(item)
+    return result
+
+
+def clear_exchanges(notebook_id: str) -> None:
+    with connection() as conn:
+        conn.execute("DELETE FROM chat_exchanges WHERE notebook_id=?", (notebook_id,))

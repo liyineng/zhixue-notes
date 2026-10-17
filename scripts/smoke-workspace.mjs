@@ -31,6 +31,7 @@ try {
   page.once("dialog", (dialog) => dialog.accept("UI验收·网络课程"));
   await page.locator("#new-notebook").click();
   await page.waitForFunction(() => document.querySelector("#notebook-title").textContent === "UI验收·网络课程");
+  await page.waitForFunction(() => document.querySelector("#notebook-select").disabled === false);
   const notebookId = await page.locator("#notebook-select").inputValue();
   createdNotebooks.push(notebookId);
   await page.locator("#file-input").setInputFiles({ name: "验收资料.md", mimeType: "text/markdown", buffer: Buffer.from("# 网络体系结构\n\n网络分层可以降低网络设计的复杂性。协议定义数据交换的规则。\n\n蓝色雨伞是这份资料的独有测试关键词。") });
@@ -52,7 +53,19 @@ try {
     const payload = route.request().postDataJSON();
     assert.equal(payload.notebook_id, notebookId);
     assert.deepEqual(payload.document_ids, [docs[0].id]);
-    await route.fulfill({ json: { answer: "【资料依据】\n网络分层可以降低网络设计的复杂性 [1]。", citations: [citation], mode: "model", source_mode: "knowledge_base" } });
+    const result = { answer: "【资料依据】\n网络分层可以降低网络设计的复杂性 [1]。", citations: [citation], mode: "model", source_mode: "knowledge_base" };
+    // Seed a persisted exchange for the mocked model response. Real /api/ask persistence is
+    // covered by TestClient tests; this fixture lets the browser restore without a model call.
+    execFileSync(process.env.PYTHON || path.resolve(".venv/bin/python"), ["-c", `
+import sys,json
+from uuid import uuid4
+from app import db
+data=json.load(sys.stdin)
+exchange_id=uuid4().hex
+db.start_exchange(exchange_id,data["notebook_id"],data["question"])
+db.finish_exchange(exchange_id,data["result"])
+`], { input: JSON.stringify({ notebook_id: notebookId, question: payload.question, result }) });
+    await route.fulfill({ json: result });
   });
   await page.locator("#question-input").fill("网络分层有什么作用？");
   const input = page.locator("#question-input");
@@ -93,6 +106,30 @@ try {
   page.once("dialog", (dialog) => dialog.accept());
   await page.locator("#close-note").click();
   await page.reload({ waitUntil: "networkidle" });
+  await page.locator(".message.assistant .citation-ref").first().waitFor();
+  assert.match(await page.locator(".message.user").first().innerText(), /网络分层有什么作用/);
+  assert.match(await page.locator(".message.assistant").first().innerText(), /降低网络设计的复杂性/);
+  await page.locator(".message.assistant .citation-ref").first().click();
+  assert.match(await page.locator("#source-text").innerText(), /验收资料.md/);
+  // Simulate refreshing while the server still has a generation in progress.
+  const pendingId = execFileSync(process.env.PYTHON || path.resolve(".venv/bin/python"), ["-c", `
+import sys
+from uuid import uuid4
+from app import db
+exchange_id=uuid4().hex
+db.start_exchange(exchange_id,sys.argv[1],"生成途中刷新")
+print(exchange_id)
+`, notebookId], { encoding: "utf8" }).trim();
+  await page.reload({ waitUntil: "networkidle" });
+  await page.locator(".loading-dots").first().waitFor();
+  assert.equal(await page.locator("#send-button").isDisabled(), true);
+  execFileSync(process.env.PYTHON || path.resolve(".venv/bin/python"), ["-c", `
+import sys
+from app import db
+db.finish_exchange(sys.argv[1],{"answer":"刷新后继续恢复的回答","citations":[],"mode":"extractive"})
+`, pendingId]);
+  await page.waitForFunction(() => document.querySelector("#messages").textContent.includes("刷新后继续恢复的回答"));
+  assert.equal(await page.locator("#send-button").isDisabled(), false);
   await page.locator("#notes-tab").click();
   await page.locator(".note-item").first().waitFor();
   assert.match(await page.locator(".note-item").innerText(), /网络分层复习笔记/);
@@ -106,11 +143,19 @@ try {
   await page.waitForFunction(() => document.querySelector("#notebook-select").disabled === false);
   assert.equal(await page.locator(".document-item").count(), 0);
   assert.equal(await page.locator(".note-item").count(), 0);
+  assert.equal(await page.locator(".message").count(), 0, "Another notebook must not show this chat");
   await page.locator("#source-search").fill("蓝色雨伞");
   await page.locator("#source-search-form").evaluate((form) => form.requestSubmit());
   await page.waitForFunction(() => document.querySelector("#search-results").textContent.includes("没有匹配"));
   await page.locator("#notebook-select").selectOption(notebookId);
   await page.locator(".document-item").first().waitFor();
+  await page.waitForFunction(() => document.querySelector("#notebook-select").disabled === false);
+  assert.equal(await page.locator(".message.user").count(), 2, "Switching back restores this notebook's questions");
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.locator("#clear-chat").click();
+  await page.waitForFunction(() => document.querySelectorAll(".message").length === 0);
+  assert.equal((await api(`/api/notes?notebook_id=${notebookId}`)).notes.length, 1);
+  assert.equal(await page.locator(".document-item").count(), 1);
   await page.locator(".document-move").first().click();
   await page.locator("#move-target").selectOption(other);
   await page.locator("#move-form").evaluate((form) => form.requestSubmit());
@@ -176,6 +221,7 @@ sys.stdout.buffer.write(doc.tobytes())
   for (const id of createdNotebooks) {
     const notes = (await api(`/api/notes?notebook_id=${id}`)).notes;
     for (const note of notes) await api(`/api/notes/${note.id}`, "DELETE");
+    await api(`/api/notebooks/${id}/chat`, "DELETE");
   }
   for (const id of createdDocuments) await api(`/api/documents/${id}`, "DELETE");
   for (const id of createdNotebooks) await api(`/api/notebooks/${id}`, "DELETE");

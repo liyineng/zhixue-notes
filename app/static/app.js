@@ -9,6 +9,7 @@ const state = {
   notes: [],
   answers: new Map(),
   busy: false,
+  chatPending: false,
   searchGeneration: 0,
   documents: [],
   settings: null,
@@ -63,11 +64,12 @@ const ui = Object.fromEntries([
   "sources-tab", "notes-tab", "sources-content", "notes-content", "source-search-form",
   "source-search", "search-results", "select-all-sources", "note-count", "note-list",
   "new-note", "export-notes", "note-dialog", "note-form", "note-title", "note-content",
-  "note-sources", "close-note", "delete-note", "export-note", "save-note",
+  "note-sources", "close-note", "delete-note", "export-note", "save-note", "clear-chat",
 ].map((id) => [id, document.getElementById(id)]));
 const emptyChatTemplate = dom.emptyChat.outerHTML;
 let currentNote = null;
 let noteSaving = false;
+let chatPollTimer = null;
 
 function noteDirty() {
   return ui["note-title"].value !== (currentNote?.title || "") ||
@@ -100,7 +102,7 @@ function selectionStatus() {
 function setBusy(busy) {
   state.busy = busy;
   [dom.sendButton, dom.summaryButton, dom.uploadButton, ui["notebook-select"],
-    ui["new-notebook"], ui["rename-notebook"], ui["delete-notebook"]].forEach((el) => el.disabled = busy);
+    ui["new-notebook"], ui["rename-notebook"], ui["delete-notebook"], ui["clear-chat"]].forEach((el) => el.disabled = busy);
 }
 
 async function loadNotebooks() {
@@ -119,6 +121,8 @@ async function loadNotebooks() {
 
 async function switchNotebook(id) {
   if (state.busy) return;
+  window.clearTimeout(chatPollTimer);
+  state.chatPending = false;
   state.notebookId = id;
   localStorage.setItem("zhixue-notebook", id);
   state.selectedSources.clear();
@@ -138,9 +142,9 @@ async function switchNotebook(id) {
   setBusy(true);
   try {
     await loadNotebooks();
-    await Promise.all([loadDocuments(true), loadNotes()]);
+    await Promise.all([loadDocuments(true), loadNotes(), loadChat()]);
     setLibraryTab("sources");
-  } finally { setBusy(false); }
+  } finally { setBusy(state.chatPending); }
 }
 
 function escapeHtml(value) {
@@ -529,7 +533,7 @@ function addMessage(role, text, options = {}) {
   return messageId;
 }
 
-function updateAssistantMessage(messageId, answer, citations, mode, sourceMode) {
+function updateAssistantMessage(messageId, answer, citations, mode, sourceMode, options = {}) {
   state.messageCitations.set(messageId, citations || []);
   const article = dom.messages.querySelector(`[data-message-id="${messageId}"]`);
   if (!article) return;
@@ -537,7 +541,7 @@ function updateAssistantMessage(messageId, answer, citations, mode, sourceMode) 
   body.innerHTML = renderAnswerHtml(answer);
   state.answers.set(messageId, { answer, citations: citations || [], notebook_id: state.notebookId,
     title: article.previousElementSibling?.querySelector(".message-body")?.textContent?.slice(0, 200) || "学习笔记",
-    queryTerms: window.__lastQuestionTerms || [] });
+    queryTerms: options.question ? extractSearchTerms(options.question) : window.__lastQuestionTerms || [] });
   body.querySelectorAll(".citation-ref").forEach((button) => {
     button.dataset.messageId = messageId;
   });
@@ -856,6 +860,45 @@ function setLibraryTab(tab) {
   }
 }
 
+async function loadChat(polling = false) {
+  window.clearTimeout(chatPollTimer);
+  const notebookId = state.notebookId;
+  const { exchanges } = await api(`/api/notebooks/${encodeURIComponent(notebookId)}/chat`);
+  if (notebookId !== state.notebookId) return;
+  dom.messages.innerHTML = emptyChatTemplate;
+  state.messageCitations.clear();
+  state.answers.clear();
+  for (const exchange of exchanges) {
+    addMessage("user", exchange.question, { id: `user-${exchange.id}` });
+    const id = addMessage("assistant", "", { id: exchange.id, loading: true });
+    if (exchange.status === "complete") {
+      const result = exchange.result;
+      updateAssistantMessage(id, result.answer, result.citations, result.mode, result.source_mode, { question: exchange.question });
+    } else if (exchange.status === "error") {
+      setAssistantError(id, new Error(exchange.result.detail || "上次请求未完成，请重新提问。"));
+    }
+  }
+  selectionStatus();
+  state.chatPending = exchanges.some((exchange) => exchange.status === "pending");
+  if (state.chatPending) {
+    setBusy(true);
+    chatPollTimer = window.setTimeout(() => {
+      loadChat(true).catch((error) => { state.chatPending = false; setBusy(false); showToast(`恢复对话失败：${error.message}`, true); });
+    }, 1500);
+  } else if (polling) setBusy(false);
+}
+
+ui["clear-chat"].addEventListener("click", async () => {
+  if (state.busy || !window.confirm("清空当前笔记本的对话？已保存的笔记和资料不会删除。")) return;
+  setBusy(true);
+  try {
+    await api(`/api/notebooks/${encodeURIComponent(state.notebookId)}/chat`, { method: "DELETE" });
+    await loadChat();
+    showToast("当前笔记本的对话已清空。");
+  } catch (error) { showToast(error.message, true); }
+  finally { setBusy(state.chatPending); }
+});
+
 async function loadNotes() {
   const id = state.notebookId;
   const { notes } = await api(`/api/notes?notebook_id=${encodeURIComponent(id)}`);
@@ -1106,12 +1149,13 @@ document.getElementById("move-form").addEventListener("submit", async (event) =>
 });
 
 async function initialize() {
+  setBusy(true);
   try {
     await loadNotebooks();
-    await Promise.all([loadDocuments(true), loadNotes(), loadSettings()]);
+    await Promise.all([loadDocuments(true), loadNotes(), loadSettings(), loadChat()]);
   } catch (error) {
     showToast(`初始化失败：${error.message}`, true);
-  }
+  } finally { setBusy(state.chatPending); }
 }
 
 initialize();

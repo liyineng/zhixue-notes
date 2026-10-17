@@ -243,7 +243,7 @@ def delete_notebook(notebook_id: str) -> dict[str, bool]:
     if notebook_id == "default":
         raise HTTPException(status_code=409, detail="默认笔记本可重命名，但不能删除。")
     if not db.delete_empty_notebook(notebook_id):
-        raise HTTPException(status_code=409, detail="请先移出资料并删除笔记，再删除空笔记本。")
+        raise HTTPException(status_code=409, detail="请先移出资料、删除笔记并清空对话，再删除空笔记本。")
     return {"deleted": True}
 
 
@@ -466,6 +466,8 @@ async def ask(payload: AskRequest) -> dict[str, Any]:
     started = time.perf_counter()
 
     document_names = [document["name"] for document in selected_documents]
+    exchange_id = uuid4().hex
+    db.start_exchange(exchange_id, payload.notebook_id or "default", payload.question)
 
     try:
         analysis = await analyze_question(
@@ -510,10 +512,12 @@ async def ask(payload: AskRequest) -> dict[str, Any]:
             document_names,
             analysis["needs_retrieval"],
         )
-    except RuntimeError as exc:
+    except Exception as exc:
+        db.finish_exchange(exchange_id, {"detail": str(exc)}, error=True)
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     elapsed_ms = round((time.perf_counter() - started) * 1000)
-    return {
+    result = {
+        "chat_id": exchange_id,
         "answer": answer,
         "citations": contexts,
         "model": settings.get("model") or None,
@@ -524,6 +528,8 @@ async def ask(payload: AskRequest) -> dict[str, Any]:
         "retrieval_hits": len(contexts),
         "elapsed_ms": elapsed_ms,
     }
+    db.finish_exchange(exchange_id, result)
+    return result
 
 
 @app.post("/api/summary")
@@ -542,15 +548,37 @@ async def summary(payload: SummaryRequest) -> dict[str, Any]:
             }
             for context in contexts
         ]
+    exchange_id = uuid4().hex
+    question = "根据当前选中的来源生成一份复习提纲。"
+    if payload.focus:
+        question += f"复习重点：{payload.focus}"
+    db.start_exchange(exchange_id, payload.notebook_id or "default", question)
     try:
         answer = await make_summary(contexts, settings)
-    except RuntimeError as exc:
+    except Exception as exc:
+        db.finish_exchange(exchange_id, {"detail": str(exc)}, error=True)
         raise HTTPException(status_code=502, detail=str(exc)) from exc
-    return {
+    result = {
+        "chat_id": exchange_id,
         "answer": answer,
         "citations": contexts,
         "mode": "model" if model_configured(settings) else "extractive",
     }
+    db.finish_exchange(exchange_id, result)
+    return result
+
+
+@app.get("/api/notebooks/{notebook_id}/chat")
+def chat_history(notebook_id: str) -> dict[str, Any]:
+    _notebook(notebook_id)
+    return {"exchanges": db.list_exchanges(notebook_id)}
+
+
+@app.delete("/api/notebooks/{notebook_id}/chat")
+def clear_chat(notebook_id: str) -> dict[str, bool]:
+    _notebook(notebook_id)
+    db.clear_exchanges(notebook_id)
+    return {"deleted": True}
 
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")

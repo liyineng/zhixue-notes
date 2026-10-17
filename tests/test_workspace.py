@@ -57,6 +57,8 @@ class WorkspaceTests(unittest.TestCase):
             self.assertEqual(result.status_code, 200)
             self.assertEqual(result.json()["citations"], [])
             self.assertEqual(self.client.post("/api/summary", json=payload).status_code, 400)
+        self.assertEqual(self.client.delete(f"/api/notebooks/{empty}").status_code, 409)
+        self.client.delete(f"/api/notebooks/{empty}/chat")
         self.assertEqual(self.client.delete(f"/api/notebooks/{empty}").status_code, 200)
         self.assertEqual(self.client.delete("/api/notebooks/default").status_code, 409)
         self.assertEqual(self.client.post("/api/ask", json={"question": "网络", "notebook_id": second,
@@ -94,6 +96,53 @@ class WorkspaceTests(unittest.TestCase):
         self.assertEqual(self.client.post("/api/notes", json={"notebook_id": "default", "title": "x", "content": "  "}).status_code, 400)
         self.assertEqual(self.client.patch("/api/notebooks/default", json={"name": "新名称"}).status_code, 200)
         self.assertEqual(self.client.get("/api/notebooks").json()["notebooks"][0]["name"], "新名称")
+
+    def test_chat_history_persists_with_citations_and_is_notebook_scoped(self):
+        notebook_id = self.notebook("问答课程")
+        other = self.notebook("另一门课程")
+        document_id = self.upload(notebook_id, "网络.md", "网络协议定义通信规则。")
+
+        async def answer(*args):
+            pending = db.list_exchanges(notebook_id)
+            self.assertEqual(pending[0]["status"], "pending")
+            self.assertEqual(pending[0]["question"], "网络协议是什么？")
+            return "协议规定通信规则 [1]。"
+
+        with patch.object(main, "answer_question", side_effect=answer):
+            response = self.client.post("/api/ask", json={"notebook_id": notebook_id, "question": "网络协议是什么？"})
+        self.assertEqual(response.status_code, 200, response.text)
+        db.init_db()
+        history = self.client.get(f"/api/notebooks/{notebook_id}/chat").json()["exchanges"]
+        self.assertEqual(len(history), 1)
+        self.assertEqual(history[0]["id"], response.json()["chat_id"])
+        self.assertEqual(history[0]["status"], "complete")
+        self.assertEqual(history[0]["result"]["answer"], "协议规定通信规则 [1]。")
+        self.assertEqual(history[0]["result"]["citations"][0]["document_id"], document_id)
+        self.assertEqual(self.client.get(f"/api/notebooks/{other}/chat").json()["exchanges"], [])
+        self.client.post("/api/notes", json={"notebook_id": notebook_id, "title": "保留笔记", "content": "不可误删"})
+        self.client.delete(f"/api/notebooks/{notebook_id}/chat")
+        self.assertEqual(self.client.get(f"/api/notebooks/{notebook_id}/chat").json()["exchanges"], [])
+        self.assertEqual(len(db.list_notes(notebook_id)), 1)
+        self.assertIsNotNone(db.get_document(document_id))
+
+    def test_failed_requests_summaries_and_interrupted_generation_are_retained(self):
+        notebook_id = self.notebook("故障恢复")
+        self.upload(notebook_id, "网络.md", "网络协议定义通信规则。")
+        with patch.object(main, "answer_question", side_effect=RuntimeError("模型暂不可用")):
+            response = self.client.post("/api/ask", json={"notebook_id": notebook_id, "question": "网络协议？"})
+        self.assertEqual(response.status_code, 502)
+        history = db.list_exchanges(notebook_id)
+        self.assertEqual(history[0]["status"], "error")
+        self.assertIn("模型暂不可用", history[0]["result"]["detail"])
+        response = self.client.post("/api/summary", json={"notebook_id": notebook_id})
+        self.assertEqual(response.status_code, 200)
+        db.start_exchange("interrupted", notebook_id, "生成途中服务重启")
+        db.init_db()
+        history = db.list_exchanges(notebook_id)
+        self.assertEqual(history[1]["status"], "complete")
+        self.assertEqual(history[2]["status"], "error")
+        self.assertIn("未完成", history[2]["result"]["detail"])
+        self.assertEqual(self.client.get("/api/notebooks/missing/chat").status_code, 404)
 
 
 class MigrationTests(unittest.TestCase):

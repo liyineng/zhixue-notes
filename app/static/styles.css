@@ -106,6 +106,8 @@ select { border: 1px solid var(--line-strong); border-radius: 8px; background: w
 .chat-heading { padding: 17px 25px; border-bottom: 1px solid var(--line); display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .chat-heading strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .chat-heading span { color: var(--muted); font-size: 12px; flex-shrink: 0; }
+.chat-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.chat-actions .button { min-height: 28px; padding: 0 5px; color: var(--muted); font-size: 11px; }
 .search-results, .note-list { flex: 1; overflow-y: auto; min-height: 0; }
 .search-heading { color: var(--muted); font-size: 12px; }
 .source-result, .note-item { display: grid; gap: 7px; width: 100%; padding: 13px 4px; background: white; border: 0; border-bottom: 1px solid var(--line); text-align: left; cursor: pointer; font-size: 12px; line-height: 1.6; }
