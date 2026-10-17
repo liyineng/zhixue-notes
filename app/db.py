@@ -233,6 +233,24 @@ def all_chunks() -> list[dict[str, Any]]:
     return chunks
 
 
+def document_chunk_ids(document_id: str) -> set[str]:
+    with connection() as conn:
+        return {row['id'] for row in conn.execute('SELECT id FROM chunks WHERE document_id=?', (document_id,))}
+
+
+def append_image_chunk(document_id: str, identity: str, page: int, lines: list[dict[str, Any]]) -> bool:
+    with connection() as conn:
+        if not conn.execute('SELECT 1 FROM documents WHERE id=?', (document_id,)).fetchone():
+            return False
+        result = conn.execute('''INSERT OR IGNORE INTO chunks(id, document_id, ordinal, page, text, lines_json)
+                                 VALUES (?, ?, (SELECT COALESCE(MAX(ordinal), -1)+1 FROM chunks WHERE document_id=?), ?, ?, ?)''',
+                              (identity, document_id, document_id, page, '\n'.join(line['text'] for line in lines),
+                               json.dumps(lines, ensure_ascii=False)))
+        conn.execute('UPDATE documents SET chunk_count=(SELECT COUNT(*) FROM chunks WHERE document_id=?) WHERE id=?',
+                     (document_id, document_id))
+        return result.rowcount > 0
+
+
 def document_count() -> int:
     with connection() as conn:
         row = conn.execute("SELECT COUNT(*) AS count FROM documents").fetchone()

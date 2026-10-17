@@ -11,3 +11,4 @@
 - Keep vendor licenses intact. Do not rewrite third-party files to resolve formatting-only warnings.
 - Image questions (upload, paste, OCR or configurable vision transcription, editable recognized text and notebook-scoped course answers) and per-citation colors are explicitly authorized. Image attachments and recognition results must survive refresh with the question; keep image files local and out of Git.
 - Individual question/answer deletion and undo are authorized. Keep the latest five deleted exchanges per notebook for undo across refresh/restart, without limiting active history. Only purge older deleted exchanges and images no longer referenced by active or retained deleted exchanges.
+- PDF image-page recognition is authorized: reuse configured vision/OCR, cache supplemental chunks with page/region provenance, preserve original files and existing chunk IDs, and report unread image pages accurately. Never infer missing pages from gaps in cited page numbers.

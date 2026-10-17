@@ -62,6 +62,7 @@ SUMMARY_PROMPT = """你是课程资料学习助手。请仅依据用户提供的
 资料按课件和真实页码提供。必须通读全部页面，覆盖开头、中间和结尾的主要主题，不要只围绕第一个片段组织总结。
 用户指定某份课件时，只整理这份课件。按主题合并相邻页面，各主题附能支持该主题的实际引用编号。
 只使用所提供的引用编号；不要为了增加引用数量逐页罗列，也不要把单页内容说成整份课件的全部内容。
+引用列表不是逐页目录，不能根据引用编号或页码跳号推断某页未提供。图片识别转写也是资料内容；标注不清晰时说明识别局限，不得猜测补全。
 控制在约 1500～2200 汉字，以主题提纲覆盖全貌，避免重复同一知识点。
 """
 
@@ -90,8 +91,9 @@ def _context_text(contexts: list[dict[str, Any]], character_limit: int = 4000) -
             text = text[:character_limit].rstrip() + "..."
         page = context.get("page")
         page_text = f"，第 {page} 页" if page else ""
+        recognition = "（图片识别转写，公式与图表以原图为准）" if context.get('image_recognition') else ""
         blocks.append(
-            f"[{context['index']}] 来源：{context['document_name']}{page_text}\n{text}"
+            f"[{context['index']}] 来源：{context['document_name']}{page_text}{recognition}\n{text}"
         )
     return "\n\n".join(blocks)
 

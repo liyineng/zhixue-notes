@@ -52,7 +52,7 @@ def local_ocr(path: Path) -> str:
 
 
 async def read_question(images: list[dict[str, Any]], settings: dict[str, Any],
-                        override: str | None = None) -> tuple[str, str]:
+                        override: str | None = None, *, instruction: str | None = None) -> tuple[str, str]:
     if override is not None:
         if not override.strip():
             raise ValueError("请填写校对后的题目文字，或恢复自动识别。")
@@ -66,9 +66,9 @@ async def read_question(images: list[dict[str, Any]], settings: dict[str, Any],
         # A separate provider must never implicitly receive the chat provider's secret.
         key = settings.get("vision_api_key", "") if settings.get("vision_base_url") else (
             settings.get("vision_api_key") or settings.get("api_key", ""))
-        content: list[dict[str, Any]] = [{"type": "text", "text":
+        content: list[dict[str, Any]] = [{"type": "text", "text": instruction or (
             "逐张识别题目，保留所有已知条件、问题和选项。公式转为 LaTeX。"
-            "图表请描述坐标、连接关系、数值与几何条件。看不清的位置标为[看不清]，不要补猜，也不要解题。"}]
+            "图表请描述坐标、连接关系、数值与几何条件。看不清的位置标为[看不清]，不要补猜，也不要解题。")}]
         for image in images:
             encoded = base64.b64encode(Path(image["path"]).read_bytes()).decode("ascii")
             content.append({"type": "image_url", "image_url": {"url": "data:image/png;base64," + encoded}})

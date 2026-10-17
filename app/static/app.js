@@ -313,7 +313,8 @@ async function uploadFiles(files) {
       const body = new FormData();
       body.append("file", file);
       const data = await api(`/api/documents?notebook_id=${encodeURIComponent(state.notebookId)}`, { method: "POST", body });
-      showToast(`已导入：${data.document.name}`);
+      const unread = data.unread_image_pages?.flatMap((item) => item.pages) || [];
+      showToast(`已导入：${data.document.name}${unread.length ? `；第 ${unread.join('、')} 页图片未成功识别` : ''}`, Boolean(unread.length));
     }
     await loadDocuments();
     await loadNotebooks();
@@ -613,6 +614,9 @@ function updateAssistantMessage(messageId, answer, citations, mode, sourceMode, 
     const note = document.createElement("div");
     note.className = "document-meta summary-coverage";
     note.textContent = `整理范围：${coverage.documents.length} 份资料，${coverage.pages ? `${coverage.pages} 个有文字的页面` : `${coverage.sources} 个片段`}；实际引用 ${citations?.length || 0} 处。`;
+    if (coverage.unread_image_pages?.length) {
+      note.textContent += ` 图片未识别：${coverage.unread_image_pages.map((item) => `${item.document_name} 第 ${item.pages.join('、')} 页`).join('；')}。`;
+    }
     body.append(note);
   }
   if (citations?.length) {
@@ -634,7 +638,7 @@ function updateAssistantMessage(messageId, answer, citations, mode, sourceMode, 
       button.innerHTML = `
         <span class="citation-index">${citation.index}</span>
         <span>
-          <span class="citation-title">${escapeHtml(citation.document_name)}${citation.page ? ` · 第 ${citation.page} 页` : ""}</span>
+          <span class="citation-title">${escapeHtml(citation.document_name)}${citation.page ? ` · 第 ${citation.page} 页` : ""}${citation.image_recognition?.length ? " · 图片识别" : ""}</span>
           <span class="citation-preview">${escapeHtml(citation.text)}</span>
         </span>
       `;

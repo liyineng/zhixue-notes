@@ -28,6 +28,7 @@ from .llm import analyze_question, answer_question, make_summary, model_configur
 from .parsers import UnsupportedDocument, parse_document
 from .retrieval import BM25Index, excerpt, focus_source, page_sources, summary_documents
 from .question_images import MAX_IMAGE_BYTES, normalize_image, local_ocr, read_question
+from .document_images import ensure_image_text
 from urllib.parse import quote
 
 mimetypes.add_type("text/javascript", ".mjs")
@@ -49,6 +50,17 @@ def _build_index(version: int) -> BM25Index:
 
 def _index() -> BM25Index:
     return _build_index(_index_version)
+
+
+async def _ensure_source_images(documents: list[dict[str, Any]], settings: dict[str, Any]) -> list[dict[str, Any]]:
+    unread = []
+    for document in documents:
+        report = await ensure_image_text(document, settings)
+        if report['added_pages']:
+            _invalidate_index()
+        if report['unread_pages']:
+            unread.append({'document_name': document['name'], 'pages': report['unread_pages']})
+    return unread
 
 
 @asynccontextmanager
@@ -171,6 +183,7 @@ def _contexts_for_results(results: list[Any]) -> list[dict[str, Any]]:
                 "text": chunk["text"],
                 "lines": chunk.get("lines") or [],
                 "score": round(float(result.score), 4),
+                "image_recognition": sorted({line['image_recognition'] for line in chunk.get('lines', []) if line.get('image_recognition')}),
             }
         )
     return contexts
@@ -201,6 +214,7 @@ def _summary_contexts(
                 "text": chunk["text"],
                 "lines": chunk.get("lines") or [],
                 "score": None,
+                "image_recognition": sorted({line['image_recognition'] for line in chunk.get('lines', []) if line.get('image_recognition')}),
             }
         )
     return contexts
@@ -318,6 +332,7 @@ async def upload_document(file: UploadFile = File(...), notebook_id: str = "defa
     document_id = uuid4().hex
     target = UPLOAD_DIR / f"{document_id}{suffix}"
     size = 0
+    imported = False
     try:
         with target.open("wb") as output:
             while chunk := await file.read(1024 * 1024):
@@ -333,11 +348,6 @@ async def upload_document(file: UploadFile = File(...), notebook_id: str = "defa
             target,
             original_name,
         )
-        if not chunks:
-            raise HTTPException(
-                status_code=400,
-                detail="没有从文件中解析出可检索文本。扫描版 PDF 需要先做 OCR。",
-            )
         document = {
             "id": document_id,
             "name": original_name,
@@ -348,9 +358,13 @@ async def upload_document(file: UploadFile = File(...), notebook_id: str = "defa
             "notebook_id": notebook_id,
         }
         db.insert_document(document, chunks)
+        unread = await _ensure_source_images([document], db.get_settings())
+        document = db.get_document(document_id)
+        if not document or not document['chunk_count']:
+            raise HTTPException(status_code=400, detail="未能从资料中识别出文字。请配置图片识别模型、安装中文 OCR，或检查图片清晰度。")
         _invalidate_index()
-        document["chunk_count"] = len(chunks)
-        return {"document": document}
+        imported = True
+        return {"document": document, "unread_image_pages": unread}
     except HTTPException:
         target.unlink(missing_ok=True)
         raise
@@ -361,6 +375,8 @@ async def upload_document(file: UploadFile = File(...), notebook_id: str = "defa
         target.unlink(missing_ok=True)
         raise HTTPException(status_code=500, detail=f"解析失败：{exc}") from exc
     finally:
+        if not imported:
+            db.delete_document(document_id)
         await file.close()
 
 
@@ -557,14 +573,17 @@ async def ask(payload: AskRequest) -> dict[str, Any]:
         if analysis["intent"] == "summary":
             analysis["needs_retrieval"] = True
         contexts: list[dict[str, Any]] = []
+        unread = []
         if analysis["needs_retrieval"] and document_ids:
             if analysis["intent"] == "summary":
                 selected_documents = summary_documents(question, selected_documents)
                 if not selected_documents:
                     raise HTTPException(status_code=400, detail="你提到的课件不在当前勾选的来源中，请先勾选该课件。")
                 document_names = [document["name"] for document in selected_documents]
+                unread = await _ensure_source_images(selected_documents, settings)
                 contexts = _summary_contexts([document["id"] for document in selected_documents])
             else:
+                unread = await _ensure_source_images(selected_documents, settings)
                 combined_query = " ".join(dict.fromkeys([analysis["search_query"], *analysis["keywords"]]))
                 if images:
                     # Diagram identifiers are task conditions, not retrieval concepts.
@@ -584,6 +603,10 @@ async def ask(payload: AskRequest) -> dict[str, Any]:
 
         retrieval_hits = len(contexts)
         coverage = summary_coverage(contexts) if analysis["intent"] == "summary" else None
+        if coverage is not None:
+            coverage['unread_image_pages'] = unread
+        if unread:
+            effective_question += f"\n资料解析状态：{unread}。这些页面含图片但识别失败，不是未提供页面，不要猜测图片内容。"
         if analysis["intent"] == "summary":
             answer = await make_summary(contexts, settings, question=effective_question)
         else:
@@ -627,8 +650,7 @@ async def summary(payload: SummaryRequest) -> dict[str, Any]:
     settings = db.get_settings()
     selected = _scope(payload.notebook_id, payload.document_ids)
     selected = summary_documents(payload.focus or "", selected)
-    contexts = _summary_contexts([doc["id"] for doc in selected])
-    if not contexts:
+    if not selected:
         raise HTTPException(status_code=400, detail="请先上传资料。")
     exchange_id = uuid4().hex
     question = "根据当前选中的来源生成一份复习提纲。"
@@ -636,11 +658,21 @@ async def summary(payload: SummaryRequest) -> dict[str, Any]:
         question += f"复习重点：{payload.focus}"
     db.start_exchange(exchange_id, payload.notebook_id or "default", question)
     try:
+        unread = await _ensure_source_images(selected, settings)
+        contexts = _summary_contexts([doc["id"] for doc in selected])
+        if not contexts:
+            raise HTTPException(status_code=400, detail="资料尚未解析出可整理的文字，请检查图片识别状态。")
         coverage = summary_coverage(contexts)
+        coverage['unread_image_pages'] = unread
+        if unread:
+            question += f"\n资料解析状态：{unread}。这些页含图片但识别失败，不是未提供页面，不要猜测图片内容。"
         answer = await make_summary(contexts, settings, question=question)
         answer, contexts = cited_sources(answer, contexts)
     except Exception as exc:
         db.finish_exchange(exchange_id, {"detail": str(exc)}, error=True)
+        if isinstance(exc, HTTPException):
+            exc.headers = {**(exc.headers or {}), "X-Chat-Id": exchange_id}
+            raise
         raise HTTPException(status_code=502, detail=str(exc), headers={"X-Chat-Id": exchange_id}) from exc
     result = {
         "chat_id": exchange_id,
