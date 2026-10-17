@@ -780,10 +780,15 @@ dom.askForm.addEventListener("submit", (event) => {
   askQuestion(question);
 });
 
+let composingQuestion = false;
+dom.questionInput.addEventListener("compositionstart", () => { composingQuestion = true; });
+dom.questionInput.addEventListener("compositionend", () => { composingQuestion = false; });
 dom.questionInput.addEventListener("keydown", (event) => {
-  if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+  // Safari can report isComposing=false for the Enter that confirms an IME candidate.
+  if (composingQuestion || event.isComposing || event.keyCode === 229) return;
+  if (event.key === "Enter" && !event.shiftKey) {
     event.preventDefault();
-    dom.askForm.requestSubmit();
+    if (!event.repeat) dom.askForm.requestSubmit();
   }
 });
 

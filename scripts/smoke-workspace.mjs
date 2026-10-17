@@ -55,7 +55,21 @@ try {
     await route.fulfill({ json: { answer: "【资料依据】\n网络分层可以降低网络设计的复杂性 [1]。", citations: [citation], mode: "model", source_mode: "knowledge_base" } });
   });
   await page.locator("#question-input").fill("网络分层有什么作用？");
-  await page.locator("#ask-form").evaluate((form) => form.requestSubmit());
+  const input = page.locator("#question-input");
+  await input.evaluate((el) => {
+    el.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true }));
+    el.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    el.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true }));
+    el.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", keyCode: 229, bubbles: true, cancelable: true }));
+    el.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", isComposing: true, bubbles: true, cancelable: true }));
+    el.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", repeat: true, bubbles: true, cancelable: true }));
+  });
+  assert.equal(await page.locator(".message").count(), 0, "IME confirmation and repeated Enter must not send");
+  await input.press("Shift+Enter");
+  await input.pressSequentially("补充说明");
+  assert.equal(await input.inputValue(), "网络分层有什么作用？\n补充说明");
+  assert.equal(await page.locator(".message").count(), 0, "Shift+Enter must only add a newline");
+  await input.press("Enter");
   await page.locator(".save-answer").click();
   await page.waitForFunction(() => document.querySelector(".save-answer").textContent === "已保存到笔记");
   await page.locator("#notes-tab").click();
