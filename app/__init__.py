@@ -1,0 +1,1 @@
+"""ZhiXue Notes application package."""

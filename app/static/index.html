@@ -1,0 +1,272 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#0f2747" />
+    <title>智学笔记</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+    <script type="module" src="/static/app.js"></script>
+  </head>
+  <body>
+    <svg class="icon-sprite" aria-hidden="true">
+      <symbol id="i-upload" viewBox="0 0 24 24">
+        <path d="M12 3v12" />
+        <path d="m17 8-5-5-5 5" />
+        <path d="M5 21h14" />
+      </symbol>
+      <symbol id="i-settings" viewBox="0 0 24 24">
+        <path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z" />
+        <path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06A1.7 1.7 0 0 0 15 19.4a1.7 1.7 0 0 0-1 .6 1.7 1.7 0 0 0-.4 1.1V21a2 2 0 1 1-4 0v-.09A1.7 1.7 0 0 0 8.6 19.4a1.7 1.7 0 0 0-1.88.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-.6-1 1.7 1.7 0 0 0-1.1-.4H3a2 2 0 1 1 0-4h.09A1.7 1.7 0 0 0 4.6 8.6a1.7 1.7 0 0 0-.34-1.88l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-.6 1.7 1.7 0 0 0 .4-1.1V3a2 2 0 1 1 4 0v.09A1.7 1.7 0 0 0 15.4 4.6a1.7 1.7 0 0 0 1.88-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.7 1.7 0 0 0 19.4 9c.12.39.33.74.6 1 .3.26.68.4 1.1.4H21a2 2 0 1 1 0 4h-.09a1.7 1.7 0 0 0-1.51.6Z" />
+      </symbol>
+      <symbol id="i-file" viewBox="0 0 24 24">
+        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z" />
+        <path d="M14 2v6h6" />
+      </symbol>
+      <symbol id="i-trash" viewBox="0 0 24 24">
+        <path d="M3 6h18" />
+        <path d="M8 6V4h8v2" />
+        <path d="M19 6 18 20H6L5 6" />
+        <path d="M10 11v5M14 11v5" />
+      </symbol>
+      <symbol id="i-send" viewBox="0 0 24 24">
+        <path d="m22 2-7 20-4-9-9-4Z" />
+        <path d="M22 2 11 13" />
+      </symbol>
+      <symbol id="i-chevron-left" viewBox="0 0 24 24">
+        <path d="m15 18-6-6 6-6" />
+      </symbol>
+      <symbol id="i-chevron-right" viewBox="0 0 24 24">
+        <path d="m9 18 6-6-6-6" />
+      </symbol>
+      <symbol id="i-external" viewBox="0 0 24 24">
+        <path d="M15 3h6v6" />
+        <path d="M10 14 21 3" />
+        <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+      </symbol>
+      <symbol id="i-sparkles" viewBox="0 0 24 24">
+        <path d="m12 3-1.9 5.1L5 10l5.1 1.9L12 17l1.9-5.1L19 10l-5.1-1.9Z" />
+        <path d="M5 3v4M3 5h4M19 17v4M17 19h4" />
+      </symbol>
+      <symbol id="i-x" viewBox="0 0 24 24">
+        <path d="M18 6 6 18M6 6l12 12" />
+      </symbol>
+    </svg>
+
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <div class="brand-mark">智</div>
+          <div>
+            <div class="brand-name">智学笔记</div>
+            <div class="brand-subtitle">课程资料学习助手</div>
+          </div>
+        </div>
+
+        <div class="notebook-picker">
+          <label for="notebook-select">笔记本</label>
+          <div class="notebook-controls">
+            <select id="notebook-select" aria-label="选择笔记本"></select>
+            <button id="new-notebook" class="icon-button" title="新建笔记本" aria-label="新建笔记本" type="button">＋</button>
+            <button id="rename-notebook" class="icon-button" title="重命名笔记本" aria-label="重命名笔记本" type="button">✎</button>
+            <button id="delete-notebook" class="icon-button" title="删除空笔记本" aria-label="删除空笔记本" type="button">×</button>
+          </div>
+        </div>
+
+        <input id="file-input" type="file" multiple hidden accept=".pdf,.md,.markdown,.txt,.docx,.pptx" />
+        <div class="sidebar-toolbar">
+          <button id="upload-button" class="button primary" type="button">
+            <svg class="icon"><use href="#i-upload"></use></svg>
+            上传资料
+          </button>
+          <button id="settings-button" class="icon-button" type="button" title="模型设置" aria-label="模型设置">
+            <svg class="icon"><use href="#i-settings"></use></svg>
+          </button>
+        </div>
+
+        <button id="dropzone" class="dropzone" type="button">
+          <svg class="icon"><use href="#i-upload"></use></svg>
+          <span>拖拽 PDF、PPTX、DOCX 或 Markdown</span>
+        </button>
+
+        <div class="library-tabs" role="tablist" aria-label="笔记本内容">
+          <button id="sources-tab" class="library-tab active" role="tab" aria-selected="true" type="button">资料来源</button>
+          <button id="notes-tab" class="library-tab" role="tab" aria-selected="false" type="button">我的笔记 <span id="note-count">0</span></button>
+        </div>
+        <div id="sources-content" class="library-content">
+        <form id="source-search-form" class="source-search" role="search">
+          <input id="source-search" type="search" placeholder="查找文件名或原文关键词" aria-label="查找来源" maxlength="500" />
+          <button type="submit" class="button secondary">查找</button>
+        </form>
+        <div class="library-heading">
+          <label><input id="select-all-sources" type="checkbox" checked /> 全选来源</label>
+          <span id="document-count">0</span>
+        </div>
+        <div id="document-list" class="document-list"></div>
+        <div id="search-results" class="search-results" hidden></div>
+        </div>
+        <div id="notes-content" class="library-content" hidden>
+          <div class="notes-toolbar">
+            <button id="new-note" class="button secondary" type="button">＋ 新建笔记</button>
+            <button id="export-notes" class="button ghost" type="button">全部导出</button>
+          </div>
+          <div id="note-list" class="note-list"></div>
+        </div>
+
+        <div class="sidebar-footer">
+          <button id="summary-button" class="button secondary" type="button">
+            <svg class="icon"><use href="#i-sparkles"></use></svg>
+            生成复习提纲
+          </button>
+          <div id="model-pill" class="model-pill">未配置模型</div>
+        </div>
+      </aside>
+
+      <main id="workspace" class="workspace">
+        <div class="mobile-tabs">
+          <button class="mobile-tab active" data-pane="chat" type="button">问答</button>
+          <button class="mobile-tab" data-pane="viewer" type="button">原文</button>
+        </div>
+
+        <section class="chat-pane">
+          <header class="chat-heading"><strong id="notebook-title">我的课程</strong><span id="selection-status">正在加载来源</span></header>
+          <div id="messages" class="messages">
+            <div id="empty-chat" class="empty-chat">
+              <div class="empty-kicker">课程资料问答</div>
+              <h1>上传资料后开始提问</h1>
+              <p>回答会标明哪些来自上传资料，哪些来自模型通用知识；资料引用可以回到 PDF 对应页面。</p>
+              <div class="prompt-examples">
+                <button type="button">这一章的核心概念是什么？</button>
+                <button type="button">公式里的每个符号代表什么？</button>
+                <button type="button">帮我梳理考试重点。</button>
+              </div>
+            </div>
+          </div>
+          <form id="ask-form" class="composer">
+            <textarea
+              id="question-input"
+              rows="2"
+              placeholder="输入问题，按 Ctrl/⌘ + Enter 发送"
+              maxlength="4000"
+            ></textarea>
+            <button id="send-button" class="send-button" type="submit" aria-label="发送问题">
+              <svg class="icon"><use href="#i-send"></use></svg>
+            </button>
+          </form>
+        </section>
+
+        <section class="viewer-pane">
+          <div class="viewer-toolbar">
+            <div class="viewer-title">
+              <svg class="icon"><use href="#i-file"></use></svg>
+              <span id="viewer-name">尚未打开资料</span>
+            </div>
+            <div class="page-controls">
+              <button id="prev-page" class="icon-button compact" type="button" aria-label="上一页">
+                <svg class="icon"><use href="#i-chevron-left"></use></svg>
+              </button>
+              <input id="page-input" type="number" min="1" value="1" aria-label="页码" />
+              <span id="page-total">/ 0</span>
+              <button id="next-page" class="icon-button compact" type="button" aria-label="下一页">
+                <svg class="icon"><use href="#i-chevron-right"></use></svg>
+              </button>
+              <button id="open-file" class="icon-button compact" type="button" title="在新窗口打开" aria-label="在新窗口打开">
+                <svg class="icon"><use href="#i-external"></use></svg>
+              </button>
+            </div>
+          </div>
+          <div id="viewer-stage" class="viewer-stage">
+            <div id="viewer-empty" class="viewer-empty">
+              <svg class="icon large"><use href="#i-file"></use></svg>
+              <p>点击回答中的引用编号，原文会在这里定位。</p>
+            </div>
+            <div id="viewer-scroll" class="viewer-scroll" hidden>
+              <div id="page-wrap" class="page-wrap">
+                <canvas id="pdf-canvas"></canvas>
+                <div id="highlight-layer" class="highlight-layer"></div>
+              </div>
+            </div>
+          </div>
+          <div id="source-panel" class="source-panel">
+            <div class="source-heading">引用原文</div>
+            <div id="source-text" class="source-text">尚未选择引用。</div>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <dialog id="settings-dialog" class="settings-dialog">
+      <form id="settings-form" method="dialog">
+        <div class="dialog-heading">
+          <div>
+            <h2>模型设置</h2>
+            <p>使用任意 OpenAI 兼容接口，也可以填写本地 Ollama 地址。</p>
+          </div>
+          <button id="close-settings" class="icon-button" type="button" aria-label="关闭">
+            <svg class="icon"><use href="#i-x"></use></svg>
+          </button>
+        </div>
+
+        <label>
+          <span>接口地址</span>
+          <input id="base-url" type="url" placeholder="https://api.deepseek.com/v1" />
+        </label>
+        <label>
+          <span>API Key</span>
+          <input id="api-key" type="password" placeholder="留空则保留已保存的密钥" autocomplete="off" />
+        </label>
+        <label>
+          <span>模型名称</span>
+          <input id="model-name" type="text" placeholder="deepseek-chat" />
+        </label>
+        <div class="field-row">
+          <label>
+            <span>温度</span>
+            <input id="temperature" type="number" min="0" max="2" step="0.1" value="0.2" />
+          </label>
+          <label>
+            <span>最大输出长度</span>
+            <input id="max-tokens" type="number" min="128" max="8192" step="1" value="1400" />
+          </label>
+          <label>
+            <span>检索片段数</span>
+            <input id="top-k" type="number" min="1" max="12" step="1" value="6" />
+          </label>
+        </div>
+        <p class="settings-note">密钥只保存在本机 data 目录，不会写入公开仓库。</p>
+        <div class="dialog-actions">
+          <button id="cancel-settings" class="button ghost" type="button">取消</button>
+          <button class="button primary" type="submit">保存设置</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="note-dialog" class="settings-dialog note-dialog">
+      <form id="note-form">
+        <div class="dialog-heading">
+          <h2>编辑笔记</h2>
+          <button id="close-note" class="icon-button" type="button" aria-label="关闭笔记">×</button>
+        </div>
+        <label><span>标题</span><input id="note-title" type="text" maxlength="200" required /></label>
+        <label><span>内容（支持 Markdown）</span><textarea id="note-content" rows="12" maxlength="200000" required></textarea></label>
+        <div id="note-sources" class="note-sources"></div>
+        <div class="dialog-actions">
+          <button id="delete-note" class="button ghost danger" type="button">删除笔记</button>
+          <button id="export-note" class="button secondary" type="button">导出 Markdown</button>
+          <button id="save-note" class="button primary" type="submit">保存笔记</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="move-dialog" class="settings-dialog">
+      <form id="move-form">
+        <div class="dialog-heading"><h2>移动资料</h2><button id="close-move" class="icon-button" type="button" aria-label="关闭移动窗口">×</button></div>
+        <p id="move-document-name"></p>
+        <label><span>目标笔记本</span><select id="move-target" required></select></label>
+        <div class="dialog-actions"><button class="button primary" type="submit">移动</button></div>
+      </form>
+    </dialog>
+
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  </body>
+</html>
