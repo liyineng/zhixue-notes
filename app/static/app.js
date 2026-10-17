@@ -67,6 +67,19 @@ const ui = Object.fromEntries([
 ].map((id) => [id, document.getElementById(id)]));
 const emptyChatTemplate = dom.emptyChat.outerHTML;
 let currentNote = null;
+let noteSaving = false;
+
+function noteDirty() {
+  return ui["note-title"].value !== (currentNote?.title || "") ||
+    ui["note-content"].value !== (currentNote?.content || "");
+}
+
+function closeNote() {
+  if (noteSaving) return false;
+  if (noteDirty() && !window.confirm("笔记有未保存的修改，放弃修改并关闭？")) return false;
+  ui["note-dialog"].close();
+  return true;
+}
 
 function jsonOptions(method, body) {
   return { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) };
@@ -416,8 +429,10 @@ function drawHighlights(viewport) {
     (line) => Number(line.page) === Number(state.pdfPage) && Array.isArray(line.bbox)
   );
   for (const line of lines) {
-    const [x1, y1] = viewport.convertToViewportPoint(line.bbox[0], line.bbox[1]);
-    const [x2, y2] = viewport.convertToViewportPoint(line.bbox[2], line.bbox[3]);
+    // PyMuPDF boxes start at the crop area's top left; PDF.js accepts PDF bottom-left coordinates.
+    const [left, , , top] = viewport.viewBox;
+    const [x1, y1] = viewport.convertToViewportPoint(left + line.bbox[0], top - line.bbox[1]);
+    const [x2, y2] = viewport.convertToViewportPoint(left + line.bbox[2], top - line.bbox[3]);
     const box = document.createElement("div");
     box.className = "highlight-box";
     box.style.left = `${Math.min(x1, x2)}px`;
@@ -894,7 +909,7 @@ function openNote(note = null) {
         try {
           const { chunks } = await api(`/api/documents/${citation.document_id}/chunks`);
           const chunk = chunks.find((item) => item.id === citation.chunk_id);
-          ui["note-dialog"].close();
+          if (!closeNote()) return;
           showCitation({ ...citation, lines: chunk?.lines || [] }, "", citation.index);
         } catch (error) { showToast(error.message, true); }
       });
@@ -905,22 +920,36 @@ function openNote(note = null) {
 }
 
 async function persistNote() {
+  if (noteSaving) return null;
   if (!ui["note-form"].reportValidity()) return null;
   const title = ui["note-title"].value.trim();
   const content = ui["note-content"].value.trim();
   if (!title || !content) throw new Error("标题和内容不能为空。");
+  noteSaving = true;
   ui["save-note"].disabled = true;
   ui["export-note"].disabled = true;
+  ui["close-note"].disabled = true;
+  ui["delete-note"].disabled = true;
+  ui["note-title"].disabled = true;
+  ui["note-content"].disabled = true;
   try {
     const result = currentNote
       ? await api(`/api/notes/${currentNote.id}`, jsonOptions("PATCH", { title, content }))
       : await api("/api/notes", jsonOptions("POST", { title, content, notebook_id: state.notebookId }));
     currentNote = result.note;
+    ui["note-title"].value = result.note.title;
+    ui["note-content"].value = result.note.content;
+    ui["delete-note"].hidden = false;
     await Promise.all([loadNotes(), loadNotebooks()]);
     return result.note;
   } finally {
+    noteSaving = false;
     ui["save-note"].disabled = false;
     ui["export-note"].disabled = false;
+    ui["close-note"].disabled = false;
+    ui["delete-note"].disabled = false;
+    ui["note-title"].disabled = false;
+    ui["note-content"].disabled = false;
   }
 }
 
@@ -1023,7 +1052,14 @@ ui["select-all-sources"].addEventListener("change", (event) => {
 ui["source-search-form"].addEventListener("submit", (event) => { event.preventDefault(); searchSources(); });
 ui["source-search"].addEventListener("input", () => { if (!ui["source-search"].value.trim()) searchSources(); });
 ui["new-note"].addEventListener("click", () => openNote());
-ui["close-note"].addEventListener("click", () => ui["note-dialog"].close());
+ui["close-note"].addEventListener("click", closeNote);
+ui["note-dialog"].addEventListener("cancel", (event) => { event.preventDefault(); closeNote(); });
+window.addEventListener("beforeunload", (event) => {
+  if (ui["note-dialog"].open && (noteSaving || noteDirty())) {
+    event.preventDefault();
+    event.returnValue = "";
+  }
+});
 ui["note-form"].addEventListener("submit", async (event) => {
   event.preventDefault();
   try { if (await persistNote()) { ui["note-dialog"].close(); showToast("笔记已保存。"); } }

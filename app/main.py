@@ -24,7 +24,7 @@ from .config import (
 )
 from .llm import analyze_question, answer_question, make_summary, model_configured
 from .parsers import UnsupportedDocument, parse_document
-from .retrieval import BM25Index, excerpt
+from .retrieval import BM25Index, excerpt, focus_source
 from urllib.parse import quote
 
 mimetypes.add_type("text/javascript", ".mjs")
@@ -358,7 +358,7 @@ def search_sources(q: str = Query(min_length=1, max_length=500),
     docs = _scope(notebook_id, [document_id] if document_id else None)
     ids = {doc["id"] for doc in docs}
     results = _index().search(q, top_k=20, document_ids=ids) if ids else []
-    contexts = _contexts_for_results(results)
+    contexts = [focus_source(context, q) for context in _contexts_for_results(results)]
     for context in contexts:
         context["snippet"] = excerpt(context["text"], q, limit=190)
     return {"results": contexts,

@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { execFileSync } from "node:child_process";
 
 const modules = process.env.PLAYWRIGHT_MODULES || path.join(os.homedir(), ".cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules");
 const { chromium } = await import(pathToFileURL(path.join(modules, "playwright/index.mjs")).href);
@@ -69,6 +70,14 @@ try {
   assert.match(downloaded, /参考来源/);
   assert.match(downloaded, /验收资料.md/);
   await page.locator("#close-note").click();
+  await page.locator(".note-item").first().click();
+  await page.locator("#note-content").fill("尚未保存的修改");
+  page.once("dialog", (dialog) => dialog.dismiss());
+  await page.keyboard.press("Escape");
+  assert.equal(await page.locator("#note-dialog").evaluate((dialog) => dialog.open), true);
+  assert.equal(await page.locator("#note-content").inputValue(), "尚未保存的修改");
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.locator("#close-note").click();
   await page.reload({ waitUntil: "networkidle" });
   await page.locator("#notes-tab").click();
   await page.locator(".note-item").first().waitFor();
@@ -98,6 +107,35 @@ try {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.screenshot({ path: path.join(output, "mobile.png"), fullPage: true });
   assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1));
+
+  // A PDF fixture catches both wrong-page labels and vertically mirrored highlight boxes.
+  const pdfBytes = execFileSync(process.env.PYTHON || path.resolve(".venv/bin/python"), ["-c", `
+import pymupdf,sys
+doc=pymupdf.open()
+page=doc.new_page(width=612,height=792)
+page.insert_text((72,100),"Introduction only")
+page=doc.new_page(width=612,height=792)
+page.insert_text((72,100),"FOCUSPHRASE network protocol",fontsize=14)
+sys.stdout.buffer.write(doc.tobytes())
+`]);
+  const uploaded = await context.request.post(base + `/api/documents?notebook_id=${other}`, {
+    multipart: { file: { name: "定位回归.pdf", mimeType: "application/pdf", buffer: pdfBytes } },
+  });
+  assert(uploaded.ok());
+  const fixture = (await uploaded.json()).document;
+  createdDocuments.push(fixture.id);
+  await page.reload({ waitUntil: "networkidle" });
+  await page.setViewportSize({ width: 1440, height: 960 });
+  await page.locator("#source-search").fill("FOCUSPHRASE");
+  await page.locator("#source-search-form").evaluate((form) => form.requestSubmit());
+  const exactResult = page.locator(".source-result").filter({ has: page.locator("span") }).first();
+  await exactResult.waitFor();
+  assert.match(await exactResult.innerText(), /第 2 页/);
+  await exactResult.click();
+  await page.locator(".highlight-box").first().waitFor();
+  assert.equal(await page.locator("#page-input").inputValue(), "2");
+  const highlightRatio = await page.locator(".highlight-box").first().evaluate((box) => parseFloat(box.style.top) / box.parentElement.clientHeight);
+  assert(highlightRatio > 0.09 && highlightRatio < 0.15, `highlight top ratio: ${highlightRatio}`);
 
   // Exercise actual PDF search and jump/highlights, without calling a model.
   const defaultDocs = (await api("/api/documents?notebook_id=default")).documents;
