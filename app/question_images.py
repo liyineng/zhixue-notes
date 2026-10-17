@@ -74,7 +74,7 @@ async def read_question(images: list[dict[str, Any]], settings: dict[str, Any],
             content.append({"type": "image_url", "image_url": {"url": "data:image/png;base64," + encoded}})
         text = await chat_completion(base_url=base_url, api_key=str(key), model=str(settings["vision_model"]),
                                      messages=[{"role": "user", "content": content}], temperature=0,
-                                     max_tokens=2600)
+                                     max_tokens=2600, thinking=False)
         if not text:
             raise ValueError("图片识别模型没有返回题目文字，请校对后重试。")
         return text[:20000], "vision"

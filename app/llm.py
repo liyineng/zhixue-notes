@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 
@@ -106,6 +107,7 @@ async def chat_completion(
     messages: list[dict[str, Any]],
     temperature: float,
     max_tokens: int,
+    thinking: bool | None = None,
 ) -> str:
     headers = {"Content-Type": "application/json"}
     if api_key.strip():
@@ -116,12 +118,25 @@ async def chat_completion(
         "temperature": temperature,
         "max_tokens": max_tokens,
     }
+    deepseek = urlparse(base_url).hostname == "api.deepseek.com"
+    if deepseek and thinking is not None:
+        payload["thinking"] = {"type": "enabled" if thinking else "disabled"}
     async with httpx.AsyncClient(timeout=180.0) as client:
         response = await client.post(
             _endpoint(base_url),
             headers=headers,
             json=payload,
         )
+        if response.status_code < 400 and deepseek:
+            choices = response.json().get("choices") or []
+            choice = choices[0] if choices else {}
+            message = choice.get("message") or {}
+            if choices and (not message.get("content") or
+                            (thinking is not False and choice.get("finish_reason") == "length")):
+                # Thinking tokens share the output budget. Retry without thinking rather
+                # than treating an empty final answer as a successful response.
+                payload["thinking"] = {"type": "disabled"}
+                response = await client.post(_endpoint(base_url), headers=headers, json=payload)
     if response.status_code >= 400:
         detail = response.text[:800]
         raise RuntimeError(
@@ -138,7 +153,12 @@ async def chat_completion(
         content = "".join(
             item.get("text", "") for item in content if isinstance(item, dict)
         )
-    return str(content).strip()
+    content = str(content or "").strip()
+    if data["choices"][0].get("finish_reason") == "length":
+        raise RuntimeError("模型输出达到长度上限，未完整返回结果。请在模型设置中提高最大输出长度后重试。")
+    if not content:
+        raise RuntimeError("模型接口返回了空的正文，请重试；若持续出现，请检查模型或服务商状态。")
+    return content
 
 
 async def analyze_question(
@@ -175,6 +195,7 @@ async def analyze_question(
         messages=messages,
         temperature=0.0,
         max_tokens=420,
+        thinking=False,
     )
     parsed = _extract_json(content)
     if not parsed:
