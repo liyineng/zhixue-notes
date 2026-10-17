@@ -26,7 +26,7 @@ from .config import (
 )
 from .llm import analyze_question, answer_question, make_summary, model_configured, select_evidence, cited_sources
 from .parsers import UnsupportedDocument, parse_document
-from .retrieval import BM25Index, excerpt, focus_source
+from .retrieval import BM25Index, excerpt, focus_source, page_sources, summary_documents
 from .question_images import MAX_IMAGE_BYTES, normalize_image, local_ocr, read_question
 from urllib.parse import quote
 
@@ -114,7 +114,7 @@ class NoteRequest(BaseModel):
     notebook_id: str
     title: str = Field(min_length=1, max_length=200)
     content: str = Field(min_length=1, max_length=200000)
-    citations: list[NoteCitation] = Field(default_factory=list, max_length=20)
+    citations: list[NoteCitation] = Field(default_factory=list, max_length=200)
 
 
 class NoteEditRequest(BaseModel):
@@ -178,26 +178,18 @@ def _contexts_for_results(results: list[Any]) -> list[dict[str, Any]]:
 
 def _summary_contexts(
     document_ids: list[str] | None,
-    limit: int = 10,
 ) -> list[dict[str, Any]]:
     wanted = set(document_ids) if document_ids is not None else None
-    chunks = [
+    chunks = page_sources([
         chunk
         for chunk in db.all_chunks()
         if wanted is None or chunk["document_id"] in wanted
-    ]
+    ])
     if not chunks:
         return []
-    chunks.sort(key=lambda item: (item["document_id"], item["ordinal"]))
-    if len(chunks) <= limit:
-        selected = chunks
-    else:
-        selected = [
-            chunks[round(index * (len(chunks) - 1) / (limit - 1))]
-            for index in range(limit)
-        ]
+    chunks.sort(key=lambda item: (item["document_name"], item.get("page") or 0, item["ordinal"]))
     contexts: list[dict[str, Any]] = []
-    for index, chunk in enumerate(selected, start=1):
+    for index, chunk in enumerate(chunks, start=1):
         contexts.append(
             {
                 "index": index,
@@ -562,13 +554,16 @@ async def ask(payload: AskRequest) -> dict[str, Any]:
         )
         if images and document_ids:
             analysis["needs_retrieval"] = True
+        if analysis["intent"] == "summary":
+            analysis["needs_retrieval"] = True
         contexts: list[dict[str, Any]] = []
         if analysis["needs_retrieval"] and document_ids:
             if analysis["intent"] == "summary":
-                contexts = _summary_contexts(
-                    list(document_ids),
-                    limit=min(12, max(top_k, 8)),
-                )
+                selected_documents = summary_documents(question, selected_documents)
+                if not selected_documents:
+                    raise HTTPException(status_code=400, detail="你提到的课件不在当前勾选的来源中，请先勾选该课件。")
+                document_names = [document["name"] for document in selected_documents]
+                contexts = _summary_contexts([document["id"] for document in selected_documents])
             else:
                 combined_query = " ".join(dict.fromkeys([analysis["search_query"], *analysis["keywords"]]))
                 if images:
@@ -588,16 +583,18 @@ async def ask(payload: AskRequest) -> dict[str, Any]:
                 contexts = await select_evidence(effective_question, _contexts_for_results(results), settings, top_k)
 
         retrieval_hits = len(contexts)
-        answer = await answer_question(
-            effective_question,
-            contexts,
-            settings,
-            document_names,
-            analysis["needs_retrieval"],
-        )
+        coverage = summary_coverage(contexts) if analysis["intent"] == "summary" else None
+        if analysis["intent"] == "summary":
+            answer = await make_summary(contexts, settings, question=effective_question)
+        else:
+            answer = await answer_question(effective_question, contexts, settings,
+                                           document_names, analysis["needs_retrieval"])
         answer, contexts = cited_sources(answer, contexts)
     except Exception as exc:
         db.finish_exchange(exchange_id, {"detail": str(exc)}, error=True)
+        if isinstance(exc, HTTPException):
+            exc.headers = {**(exc.headers or {}), "X-Chat-Id": exchange_id}
+            raise
         raise HTTPException(status_code=502, detail=str(exc), headers={"X-Chat-Id": exchange_id}) from exc
     elapsed_ms = round((time.perf_counter() - started) * 1000)
     result = {
@@ -610,6 +607,7 @@ async def ask(payload: AskRequest) -> dict[str, Any]:
         "intent": analysis["intent"],
         "search_query": analysis["search_query"],
         "retrieval_hits": retrieval_hits,
+        "summary_coverage": coverage,
         "elapsed_ms": elapsed_ms,
         "image_question_text": image_text,
         "image_recognition_mode": image_mode,
@@ -618,29 +616,29 @@ async def ask(payload: AskRequest) -> dict[str, Any]:
     return result
 
 
+def summary_coverage(contexts: list[dict[str, Any]]) -> dict[str, Any]:
+    return {"documents": list(dict.fromkeys(c["document_name"] for c in contexts)),
+            "pages": len({(c["document_id"], c["page"]) for c in contexts if c["page"] is not None}),
+            "sources": len(contexts)}
+
+
 @app.post("/api/summary")
 async def summary(payload: SummaryRequest) -> dict[str, Any]:
     settings = db.get_settings()
     selected = _scope(payload.notebook_id, payload.document_ids)
+    selected = summary_documents(payload.focus or "", selected)
     contexts = _summary_contexts([doc["id"] for doc in selected])
     if not contexts:
         raise HTTPException(status_code=400, detail="请先上传资料。")
-    if payload.focus:
-        focus = payload.focus.strip()
-        contexts = [
-            {
-                **context,
-                "text": f"复习重点：{focus}\n{context['text']}",
-            }
-            for context in contexts
-        ]
     exchange_id = uuid4().hex
     question = "根据当前选中的来源生成一份复习提纲。"
     if payload.focus:
         question += f"复习重点：{payload.focus}"
     db.start_exchange(exchange_id, payload.notebook_id or "default", question)
     try:
-        answer = await make_summary(contexts, settings)
+        coverage = summary_coverage(contexts)
+        answer = await make_summary(contexts, settings, question=question)
+        answer, contexts = cited_sources(answer, contexts)
     except Exception as exc:
         db.finish_exchange(exchange_id, {"detail": str(exc)}, error=True)
         raise HTTPException(status_code=502, detail=str(exc), headers={"X-Chat-Id": exchange_id}) from exc
@@ -649,6 +647,7 @@ async def summary(payload: SummaryRequest) -> dict[str, Any]:
         "answer": answer,
         "citations": contexts,
         "mode": "model" if model_configured(settings) else "extractive",
+        "summary_coverage": coverage,
     }
     db.finish_exchange(exchange_id, result)
     return result

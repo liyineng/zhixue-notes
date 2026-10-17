@@ -608,6 +608,13 @@ function updateAssistantMessage(messageId, answer, citations, mode, sourceMode, 
     note.textContent = "本次未检索到资料依据，以下内容来自模型的通用知识。";
     body.append(note);
   }
+  if (options.coverage) {
+    const coverage = options.coverage;
+    const note = document.createElement("div");
+    note.className = "document-meta summary-coverage";
+    note.textContent = `整理范围：${coverage.documents.length} 份资料，${coverage.pages ? `${coverage.pages} 个有文字的页面` : `${coverage.sources} 个片段`}；实际引用 ${citations?.length || 0} 处。`;
+    body.append(note);
+  }
   if (citations?.length) {
     const list = document.createElement("div");
     list.className = "citation-list";
@@ -799,7 +806,8 @@ async function askQuestion(question) {
       data.answer,
       data.citations,
       data.mode,
-      data.source_mode
+      data.source_mode,
+      { coverage: data.summary_coverage }
     );
     bindExchange(assistantId, userId, data.chat_id);
     if (data.image_question_text) addRecognizedText(dom.messages.querySelector(`[data-message-id="${userId}"]`), data.image_question_text, data.image_recognition_mode);
@@ -957,7 +965,7 @@ async function generateSummary() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ notebook_id: state.notebookId, document_ids: selectedIds() }),
     });
-    updateAssistantMessage(assistantId, data.answer, data.citations, data.mode);
+    updateAssistantMessage(assistantId, data.answer, data.citations, data.mode, data.source_mode, { coverage: data.summary_coverage });
     bindExchange(assistantId, userId, data.chat_id);
   } catch (error) {
     setAssistantError(assistantId, error);
@@ -1089,7 +1097,7 @@ async function loadChat(polling = false) {
     const id = addMessage("assistant", "", { id: exchange.id, loading: true });
     if (exchange.status === "complete") {
       const result = exchange.result;
-      updateAssistantMessage(id, result.answer, result.citations, result.mode, result.source_mode, { question: exchange.question });
+      updateAssistantMessage(id, result.answer, result.citations, result.mode, result.source_mode, { question: exchange.question, coverage: result.summary_coverage });
     } else if (exchange.status === "error") {
       setAssistantError(id, new Error(exchange.result.detail || "上次请求未完成，请重新提问。"));
     }

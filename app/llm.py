@@ -59,6 +59,10 @@ SUMMARY_PROMPT = """你是课程资料学习助手。请仅依据用户提供的
 4. 常见问题：列出 3 个可能考到的问题，并附答案要点和引用编号。
 
 资料不足时明确写出“给定资料中未找到依据”，不得编造。
+资料按课件和真实页码提供。必须通读全部页面，覆盖开头、中间和结尾的主要主题，不要只围绕第一个片段组织总结。
+用户指定某份课件时，只整理这份课件。按主题合并相邻页面，各主题附能支持该主题的实际引用编号。
+只使用所提供的引用编号；不要为了增加引用数量逐页罗列，也不要把单页内容说成整份课件的全部内容。
+控制在约 1500～2200 汉字，以主题提纲覆盖全貌，避免重复同一知识点。
 """
 
 
@@ -355,6 +359,7 @@ async def answer_question(
 async def make_summary(
     contexts: list[dict[str, Any]],
     settings: dict[str, Any],
+    question: str = "",
 ) -> str:
     if not contexts:
         return "给定资料中未找到依据。"
@@ -365,7 +370,7 @@ async def make_summary(
         {"role": "system", "content": SUMMARY_PROMPT},
         {
             "role": "user",
-            "content": f"资料片段：\n{_context_text(contexts, character_limit=620)}",
+            "content": f"整理要求：{question or '整理当前选中的全部课程资料'}\n\n按页提供的资料：\n{_context_text(contexts, character_limit=100000)}",
         },
     ]
     return await chat_completion(
@@ -374,5 +379,6 @@ async def make_summary(
         model=str(settings["model"]),
         messages=messages,
         temperature=float(settings.get("temperature", 0.2)),
-        max_tokens=max(int(settings.get("max_tokens", 1400)), 1800),
+        max_tokens=max(int(settings.get("max_tokens", 1400)), 8192),
+        thinking=False,
     )

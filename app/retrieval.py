@@ -10,6 +10,22 @@ ASCII_WORD = re.compile(r"[a-zA-Z0-9_]+")
 CJK_RUN = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]+")
 
 
+def summary_documents(question: str, documents: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Resolve named lesson files only within the user's selected sources."""
+    pattern = r"(?<![A-Za-z0-9])([A-Za-z]{1,5})\s*0*(\d{1,3})(?!\d)"
+    codes = {(prefix.casefold(), int(number)) for prefix, number in re.findall(pattern, question)}
+    if codes:
+        return [document for document in documents if codes.intersection(
+            (prefix.casefold(), int(number)) for prefix, number in re.findall(pattern, document["name"]))]
+    matched = []
+    for document in documents:
+        # Course filenames normally use a lesson code, title, and revision suffix.
+        titles = re.findall(r"[\u3400-\u9fff]{3,}", document["name"])
+        if any(title in question for title in titles):
+            matched.append(document)
+    return matched or documents
+
+
 def tokenize(text: str) -> list[str]:
     tokens: list[str] = []
     lowered = text.lower()
