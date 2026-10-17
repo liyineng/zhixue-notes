@@ -616,9 +616,15 @@ function updateAssistantMessage(messageId, answer, citations, mode, sourceMode, 
     body.append(note);
   }
   if (citations?.length) {
+    const referenced = new Set([...answer.matchAll(/\[(\d+)\]/g)].map((match) => Number(match[1])));
+    const sources = citations.filter((citation) => referenced.has(Number(citation.index)));
+    const disclosure = document.createElement("details");
+    disclosure.className = "citation-disclosure";
+    const summary = document.createElement("summary");
+    summary.textContent = `引用来源（${sources.length}）`;
     const list = document.createElement("div");
     list.className = "citation-list";
-    citations.filter((citation) => [...answer.matchAll(/\[(\d+)\]/g)].some((match) => Number(match[1]) === Number(citation.index))).forEach((citation) => {
+    sources.forEach((citation) => {
       const button = document.createElement("button");
       button.type = "button";
       button.className = "citation-card";
@@ -634,7 +640,8 @@ function updateAssistantMessage(messageId, answer, citations, mode, sourceMode, 
       `;
       list.append(button);
     });
-    body.append(list);
+    disclosure.append(summary, list);
+    if (sources.length) body.append(disclosure);
   }
   const save = document.createElement("button");
   save.type = "button";

@@ -529,6 +529,12 @@ select { border: 1px solid var(--line-strong); border-radius: 8px; background: w
   margin-top: 16px;
 }
 
+.citation-disclosure { margin-top: 16px; }
+.citation-disclosure > summary { cursor: pointer; padding: 8px 0; color: var(--muted); font-size: 13px; font-weight: 600; }
+.citation-disclosure > summary:hover { color: var(--ink); }
+.citation-disclosure > summary:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; border-radius: 4px; }
+.citation-disclosure .citation-list { margin-top: 4px; }
+
 .citation-card {
   display: grid;
   grid-template-columns: 30px minmax(0, 1fr);
