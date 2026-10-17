@@ -61,7 +61,7 @@ print(json.dumps({"pdf":base64.b64encode(doc.tobytes()).decode(),"png":base64.b6
     assert.deepEqual(payload.image_ids, [image.id]);
     assert.equal(payload.notebook_id, notebook.id);
     assert.match(payload.image_text, /protocol/);
-    const result = { answer: "- 协议定义数据交换规则 [1]。\n- 分层降低复杂性 [2]。\n- 规则也约束通信双方 [3]。", citations, mode: "model", source_mode: "knowledge_base", image_question_text: payload.image_text, image_recognition_mode: "manual" };
+    const result = { answer: "- 协议定义数据交换规则 [1]。\n- 分层降低复杂性 [2]。\n- 规则也约束通信双方 [3]。\n\n## 最终结果\n\n| 主机 | B1 端口 | B2 端口 |\n|---|---|---|\n| **H1** | 1 | 1 |\n| H5 | 2 | 2 |\n\n1. 学习源地址\n2. 查目的地址\n\n`[99]` <script>throw Error(1)</script>", citations, mode: "model", source_mode: "knowledge_base", image_question_text: payload.image_text, image_recognition_mode: "manual" };
     execFileSync(python, ["-c", `
 import sys,json
 from uuid import uuid4
@@ -75,6 +75,10 @@ db.finish_exchange(i,d["result"])
   await page.locator("#question-input").press("Enter");
   const refs = page.locator(".message.assistant .message-body > ul .citation-ref");
   await refs.nth(1).waitFor();
+  assert.equal(await page.locator('.message.assistant table tbody tr').count(), 2);
+  assert.equal(await page.locator('.message.assistant ol li').count(), 2);
+  assert.equal(await page.locator('.message.assistant .citation-ref[data-citation="99"]').count(), 0);
+  assert.equal(await page.locator('.message.assistant script').count(), 0);
   const colors = await refs.evaluateAll((buttons) => buttons.map((button) => getComputedStyle(button).color));
   assert.notEqual(colors[0], colors[1]);
   await refs.first().click();

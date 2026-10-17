@@ -488,6 +488,22 @@ select { border: 1px solid var(--line-strong); border-radius: 8px; background: w
   margin-bottom: 0;
 }
 
+.message-body h2, .message-body h3, .message-body h4 { margin: 20px 0 10px; line-height: 1.5; }
+.message-body h2 { font-size: 18px; }
+.message-body h3 { font-size: 16px; }
+.message-body h4 { font-size: 15px; }
+.answer-table-wrap { max-width: 100%; overflow-x: auto; margin: 14px 0; border: 1px solid var(--line); border-radius: 8px; }
+.answer-table-wrap table { border-collapse: collapse; width: 100%; min-width: 260px; font-size: 13px; line-height: 1.65; }
+.answer-table-wrap th, .answer-table-wrap td { padding: 9px 12px; border-bottom: 1px solid var(--line); vertical-align: top; min-width: 55px; }
+.answer-table-wrap th { background: var(--blue-soft); font-weight: 600; white-space: nowrap; }
+.answer-table-wrap tbody tr:last-child td { border-bottom: 0; }
+.answer-table-wrap tbody tr:nth-child(even) { background: #f8fafc; }
+.message-body ol, .message-body ul { padding-left: 24px; }
+.message-body li { margin: 5px 0; }
+.message-body pre { max-width: 100%; overflow: auto; padding: 12px; background: #f1f5f9; border-radius: 6px; }
+.message-body code { font-family: ui-monospace, monospace; font-size: .9em; }
+.message-body blockquote { margin: 12px 0; padding-left: 12px; border-left: 3px solid var(--line); color: var(--muted); }
+
 .citation-ref {
   display: inline-flex;
   align-items: center;

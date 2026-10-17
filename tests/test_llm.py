@@ -39,6 +39,12 @@ class CompletionTests(unittest.TestCase):
         self.assertEqual(len(requests), 2)
         self.assertTrue(all(r['thinking'] == {'type': 'disabled'} for r in requests))
 
+    def test_problem_solving_retains_thinking_with_a_larger_retry_budget(self):
+        result, requests = self.call([self.reply('', 'length'), self.reply('推导后的完整答案')], thinking=True)
+        self.assertEqual(result, '推导后的完整答案')
+        self.assertEqual(requests[1]['thinking'], {'type': 'enabled'})
+        self.assertGreaterEqual(requests[1]['max_tokens'], 8192)
+
     def test_persistent_empty_is_an_error_not_none_or_success(self):
         with self.assertRaisesRegex(RuntimeError, '空的正文'):
             self.call([self.reply(None)])

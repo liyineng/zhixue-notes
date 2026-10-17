@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import mimetypes
+import re
 import time
 from contextlib import asynccontextmanager
 from functools import lru_cache
@@ -23,7 +24,7 @@ from .config import (
     QUESTION_IMAGE_DIR,
     ensure_directories,
 )
-from .llm import analyze_question, answer_question, make_summary, model_configured
+from .llm import analyze_question, answer_question, make_summary, model_configured, select_evidence, cited_sources
 from .parsers import UnsupportedDocument, parse_document
 from .retrieval import BM25Index, excerpt, focus_source
 from .question_images import MAX_IMAGE_BYTES, normalize_image, local_ocr, read_question
@@ -569,28 +570,24 @@ async def ask(payload: AskRequest) -> dict[str, Any]:
                     limit=min(12, max(top_k, 8)),
                 )
             else:
-                combined_query = " ".join(
-                    dict.fromkeys(
-                        [
-                            analysis["search_query"],
-                            *analysis["keywords"],
-                            effective_question,
-                        ]
-                    )
-                )
+                combined_query = " ".join(dict.fromkeys([analysis["search_query"], *analysis["keywords"]]))
+                if images:
+                    # Diagram identifiers are task conditions, not retrieval concepts.
+                    combined_query = re.sub(r"\b[A-Za-z]\d+\b", " ", combined_query)
                 results = _index().search(
                     combined_query,
-                    top_k=top_k,
+                    top_k=min(20, top_k * 3),
                     document_ids=document_ids,
                 )
                 if not results and combined_query != effective_question:
                     results = _index().search(
                         effective_question,
-                        top_k=top_k,
+                        top_k=min(20, top_k * 3),
                         document_ids=document_ids,
                     )
-                contexts = _contexts_for_results(results)
+                contexts = await select_evidence(effective_question, _contexts_for_results(results), settings, top_k)
 
+        retrieval_hits = len(contexts)
         answer = await answer_question(
             effective_question,
             contexts,
@@ -598,6 +595,7 @@ async def ask(payload: AskRequest) -> dict[str, Any]:
             document_names,
             analysis["needs_retrieval"],
         )
+        answer, contexts = cited_sources(answer, contexts)
     except Exception as exc:
         db.finish_exchange(exchange_id, {"detail": str(exc)}, error=True)
         raise HTTPException(status_code=502, detail=str(exc)) from exc
@@ -611,7 +609,7 @@ async def ask(payload: AskRequest) -> dict[str, Any]:
         "source_mode": "knowledge_base" if contexts else "general_knowledge",
         "intent": analysis["intent"],
         "search_query": analysis["search_query"],
-        "retrieval_hits": len(contexts),
+        "retrieval_hits": retrieval_hits,
         "elapsed_ms": elapsed_ms,
         "image_question_text": image_text,
         "image_recognition_mode": image_mode,

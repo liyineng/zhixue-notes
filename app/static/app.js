@@ -1,3 +1,4 @@
+import { renderAnswerHtml, matchingSourceLines } from "/static/answer-format.js";
 import * as pdfjsLib from "/static/vendor/pdfjs/pdf.mjs";
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = "/static/vendor/pdfjs/pdf.worker.mjs";
@@ -522,44 +523,6 @@ function drawHighlights(viewport) {
   ui["highlight-legend"].hidden = !lines.length;
 }
 
-function renderInline(text) {
-  return escapeHtml(text)
-    .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
-    .replace(
-      /\[(\d+)\]/g,
-      '<button class="citation-ref" type="button" data-citation="$1">[$1]</button>'
-    );
-}
-
-function renderAnswerHtml(text) {
-  const lines = String(text || "").split("\n");
-  const blocks = [];
-  let listOpen = false;
-  for (const rawLine of lines) {
-    const line = rawLine.trimEnd();
-    const bullet = line.match(/^\s*[-*]\s+(.+)$/);
-    if (bullet) {
-      if (!listOpen) {
-        blocks.push("<ul>");
-        listOpen = true;
-      }
-      blocks.push(`<li>${renderInline(bullet[1])}</li>`);
-      continue;
-    }
-    if (listOpen) {
-      blocks.push("</ul>");
-      listOpen = false;
-    }
-    if (!line.trim()) {
-      blocks.push('<div class="message-gap"></div>');
-      continue;
-    }
-    blocks.push(`<p>${renderInline(line)}</p>`);
-  }
-  if (listOpen) blocks.push("</ul>");
-  return blocks.join("");
-}
-
 function scrollMessages() {
   dom.messages.scrollTop = dom.messages.scrollHeight;
 }
@@ -621,7 +584,7 @@ function updateAssistantMessage(messageId, answer, citations, mode, sourceMode, 
   const article = dom.messages.querySelector(`[data-message-id="${messageId}"]`);
   if (!article) return;
   const body = article.querySelector(".message-body");
-  body.innerHTML = renderAnswerHtml(answer);
+  body.innerHTML = renderAnswerHtml(answer, citations || []);
   state.answers.set(messageId, { answer, citations: citations || [], notebook_id: state.notebookId,
     title: article.previousElementSibling?.querySelector(".message-body")?.textContent?.slice(0, 200) || "学习笔记",
     queryTerms: options.question ? extractSearchTerms(options.question) : window.__lastQuestionTerms || [] });
@@ -643,15 +606,15 @@ function updateAssistantMessage(messageId, answer, citations, mode, sourceMode, 
   if (citations?.length) {
     const list = document.createElement("div");
     list.className = "citation-list";
-    citations.forEach((citation, index) => {
+    citations.filter((citation) => [...answer.matchAll(/\[(\d+)\]/g)].some((match) => Number(match[1]) === Number(citation.index))).forEach((citation) => {
       const button = document.createElement("button");
       button.type = "button";
       button.className = "citation-card";
       button.dataset.messageId = messageId;
-      button.dataset.citation = String(index + 1);
+      button.dataset.citation = String(citation.index);
       colorCitation(button, citation.index);
       button.innerHTML = `
-        <span class="citation-index">${index + 1}</span>
+        <span class="citation-index">${citation.index}</span>
         <span>
           <span class="citation-title">${escapeHtml(citation.document_name)}${citation.page ? ` · 第 ${citation.page} 页` : ""}</span>
           <span class="citation-preview">${escapeHtml(citation.text)}</span>
@@ -996,7 +959,7 @@ dom.messages.addEventListener("click", (event) => {
   if (!button) return;
   const messageId = button.dataset.messageId;
   const citations = state.messageCitations.get(messageId) || [];
-  const citation = citations[Number(button.dataset.citation) - 1];
+  const citation = citations.find((item) => Number(item.index) === Number(button.dataset.citation));
   if (!citation) return;
   citation.queryTerms = state.answers.get(messageId)?.queryTerms || [];
   showCitation(citation, messageId, button.dataset.citation);
@@ -1158,7 +1121,8 @@ function openNote(note = null) {
           const { chunks } = await api(`/api/documents/${citation.document_id}/chunks`);
           const chunk = chunks.find((item) => item.id === citation.chunk_id);
           if (!closeNote()) return;
-          showCitation({ ...citation, lines: chunk?.lines || [] }, "", citation.index);
+          const pageLines = matchingSourceLines(citation, chunks);
+          showCitation({ ...citation, lines: pageLines.length ? pageLines : chunk?.lines || [] }, "", citation.index);
         } catch (error) { showToast(error.message, true); }
       });
       ui["note-sources"].append(button);

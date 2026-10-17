@@ -7,7 +7,7 @@ from urllib.parse import urlparse
 
 import httpx
 
-from .retrieval import excerpt
+from .retrieval import excerpt, quoted_evidence
 
 PLANNER_SYSTEM_PROMPT = """你是课程资料学习助手的检索规划器。
 分析用户输入，只返回一个 JSON 对象，不要使用代码块，不要添加解释。
@@ -41,6 +41,15 @@ ANSWER_SYSTEM_PROMPT = """你是课程资料学习助手。
 7. 使用与用户问题相同的语言，直接、简洁，便于复习。
 8. 遇到公式时保留数学表达，不要凭空改写。"""
 
+PLANNER_SYSTEM_PROMPT += "\n7. 图片习题检索应提炼原理与方法，不要把 H1、B1 等主机/设备编号、完整拓扑、题号和文件名当作检索关键词。"
+ANSWER_SYSTEM_PROMPT += """
+9. 解题先给结论与最终表格，再给必要步骤，最后简列相关资料原理。使用 Markdown 表格、标题和有序列表。
+10. 题图/题干中的已知条件来自用户；依据资料原理对题目推导得出的结果标为“依据资料原理推导”，无需资料中出现完全相同例题才可以引用原理。
+11. 每个引用必须直接支持其前面的具体说法。不相关的生成树、路由等内容不得凑作网桥自学习的依据；资料未提到自学习时不得声称其给出了该规则。
+12. 只使用提供的引用编号。不要罗列与解答无关的检索结果，也不要把所有推导机械地归入通用知识。
+13. 算法、流程和状态变化题须在内部按输入顺序逐步核对：先明确每一步的输入和规则，再更新状态；不得混淆源与目的、请求与响应，不得把未发生的事件作为已知。最终表格须与逐步推导一致。
+"""
+
 SUMMARY_PROMPT = """你是课程资料学习助手。请仅依据用户提供的“资料片段”，生成复习材料。
 
 输出结构：
@@ -69,7 +78,7 @@ def _endpoint(base_url: str) -> str:
     return f"{base}/v1/chat/completions"
 
 
-def _context_text(contexts: list[dict[str, Any]], character_limit: int = 520) -> str:
+def _context_text(contexts: list[dict[str, Any]], character_limit: int = 4000) -> str:
     blocks: list[str] = []
     for context in contexts:
         text = " ".join(str(context["text"]).split())
@@ -81,6 +90,60 @@ def _context_text(contexts: list[dict[str, Any]], character_limit: int = 520) ->
             f"[{context['index']}] 来源：{context['document_name']}{page_text}\n{text}"
         )
     return "\n\n".join(blocks)
+
+
+async def select_evidence(question: str, candidates: list[dict[str, Any]],
+                          settings: dict[str, Any], limit: int = 6) -> list[dict[str, Any]]:
+    if not candidates or not model_configured(settings):
+        return candidates[:limit]
+    content = await chat_completion(
+        base_url=str(settings["base_url"]), api_key=str(settings.get("api_key", "")),
+        model=str(settings["model"]), temperature=0, max_tokens=1800, thinking=False,
+        messages=[{"role": "system", "content":
+            "你是资料证据筛选器。只返回 JSON 对象：{\"evidence\":[{\"source\":1,\"quote\":\"原文连续摘录\"}]}。"
+            "挑选直接支持解题原理或方法的资料，按相关性排序。不要被主机号、设备号、题号等巧合词吸引。"
+            "例如网桥自学习题应选源地址学习/目的地址查表/转发过滤的规则，而不是生成树或路由器转发表。"
+            f"最多 {limit} 条，每条摘录不超过 500 字。同一页可以摘录不同规则，但不要重复。"
+            "quote 必须是候选原文连续的逐字摘录，可把换行替换为空格，不得改写或省略中间文字。"
+            "没有直接相关证据时返回 {\"evidence\":[]}。"},
+            {"role": "user", "content": f"题目：{question}\n\n候选原文：\n{_context_text(candidates)}"}])
+    parsed = _extract_json(content)
+    if parsed is None or not isinstance(parsed.get("evidence"), list):
+        raise RuntimeError("资料证据筛选未返回有效结果，请重试。")
+    selected = []
+    seen = set()
+    by_index = {c["index"]: c for c in candidates}
+    for item in parsed["evidence"]:
+        if not isinstance(item, dict) or not isinstance(item.get("source"), int):
+            continue
+        candidate = by_index.get(item["source"])
+        if not candidate or not isinstance(item.get("quote"), str):
+            continue
+        evidence = quoted_evidence(candidate, item["quote"])
+        if evidence is None:
+            continue
+        key = (evidence["document_id"], evidence.get("page"), evidence["text"])
+        if key in seen:
+            continue
+        selected.append({**evidence, "index": len(selected) + 1})
+        seen.add(key)
+        if len(selected) == limit:
+            break
+    return selected
+
+
+def cited_sources(answer: str, contexts: list[dict[str, Any]]) -> tuple[str, list[dict[str, Any]]]:
+    """Return only sources actually cited, with matching contiguous reference numbers."""
+    parts = re.split(r"(```[\s\S]*?```|~~~[\s\S]*?~~~|`+[^`]*`+)", answer)
+    used = {int(n) for part in parts[::2] for n in re.findall(r"\[(\d+)\]", part)}
+    allowed = {c["index"] for c in contexts}
+    if used - allowed:
+        raise RuntimeError("模型使用了不存在的资料引用编号，请重新生成回答。")
+    sources = [c for c in contexts if c["index"] in used]
+    numbers = {c["index"]: i for i, c in enumerate(sources, 1)}
+    answer = "".join(re.sub(r"\[(\d+)\]", lambda m: f"[{numbers[int(m[1])]}]", part)
+                     if i % 2 == 0 else part for i, part in enumerate(parts))
+    return answer, [{**c, "index": i} for i, c in enumerate(sources, 1)]
 
 
 def _extract_json(text: str) -> dict[str, Any] | None:
@@ -121,6 +184,8 @@ async def chat_completion(
     deepseek = urlparse(base_url).hostname == "api.deepseek.com"
     if deepseek and thinking is not None:
         payload["thinking"] = {"type": "enabled" if thinking else "disabled"}
+        if thinking:
+            payload["reasoning_effort"] = "low"
     async with httpx.AsyncClient(timeout=180.0) as client:
         response = await client.post(
             _endpoint(base_url),
@@ -133,9 +198,12 @@ async def chat_completion(
             message = choice.get("message") or {}
             if choices and (not message.get("content") or
                             (thinking is not False and choice.get("finish_reason") == "length")):
-                # Thinking tokens share the output budget. Retry without thinking rather
-                # than treating an empty final answer as a successful response.
-                payload["thinking"] = {"type": "disabled"}
+                # Thinking tokens share the output budget. Preserve reasoning for
+                # problem solving; short extraction tasks can retry without it.
+                if thinking is True:
+                    payload["max_tokens"] = min(16384, max(8192, max_tokens * 2))
+                else:
+                    payload["thinking"] = {"type": "disabled"}
                 response = await client.post(_endpoint(base_url), headers=headers, json=payload)
     if response.status_code >= 400:
         detail = response.text[:800]
@@ -272,13 +340,15 @@ async def answer_question(
             ),
         },
     ]
+    deepseek = urlparse(str(settings["base_url"])).hostname == "api.deepseek.com"
     return await chat_completion(
         base_url=str(settings["base_url"]),
         api_key=str(settings.get("api_key", "")),
         model=str(settings["model"]),
         messages=messages,
         temperature=float(settings.get("temperature", 0.2)),
-        max_tokens=int(settings.get("max_tokens", 1400)),
+        max_tokens=max(8192, int(settings.get("max_tokens", 1400))) if deepseek else int(settings.get("max_tokens", 1400)),
+        thinking=True if deepseek else None,
     )
 
 

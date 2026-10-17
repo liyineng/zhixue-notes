@@ -60,14 +60,62 @@ class SearchResult:
     score: float
 
 
+def page_sources(chunks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Reassemble page evidence from legacy chunks without changing stored uploads."""
+    sources: dict[tuple[str, int], dict[str, Any]] = {}
+    seen: dict[tuple[str, int], set[tuple[Any, ...]]] = {}
+    unpaged = []
+    for chunk in chunks:
+        lines = chunk.get("lines") or []
+        if chunk.get("document_kind") not in {"pdf", "pptx"} or not lines:
+            unpaged.append(chunk)
+            continue
+        for line in lines:
+            page = line.get("page")
+            if page is None:
+                continue
+            key = (chunk["document_id"], page)
+            if key not in sources:
+                sources[key] = {**chunk, "page": page, "lines": []}
+                seen[key] = set()
+            identity = (line["text"], tuple(line.get("bbox") or []))
+            if identity not in seen[key]:
+                sources[key]["lines"].append(line)
+                seen[key].add(identity)
+    for source in sources.values():
+        source["text"] = "\n".join(line["text"] for line in source["lines"])
+    return [*unpaged, *sources.values()]
+
+
+def quoted_evidence(context: dict[str, Any], quote: str) -> dict[str, Any] | None:
+    """Accept only a literal source quote and retain the matching line coordinates."""
+    quote = " ".join(quote.split())
+    if not quote:
+        return None
+    lines = context.get("lines") or []
+    text = " ".join(" ".join(line["text"].split()) for line in lines) if lines else " ".join(context["text"].split())
+    start = text.find(quote)
+    if start < 0:
+        return None
+    end = start + len(quote)
+    offset = 0
+    matched = []
+    for line in lines:
+        length = len(" ".join(line["text"].split()))
+        if offset < end and offset + length > start:
+            matched.append(line)
+        offset += length + 1
+    return {**context, "text": quote, "lines": matched}
+
+
 class BM25Index:
     def __init__(self, chunks: list[dict[str, Any]]) -> None:
-        self.chunks = chunks
+        self.chunks = page_sources(chunks)
         self.term_frequencies: list[Counter[str]] = []
         self.lengths: list[int] = []
         document_frequency: Counter[str] = Counter()
 
-        for chunk in chunks:
+        for chunk in self.chunks:
             tokens = tokenize(chunk["text"])
             frequencies = Counter(tokens)
             self.term_frequencies.append(frequencies)
@@ -85,7 +133,7 @@ class BM25Index:
         top_k: int = 6,
         document_ids: set[str] | None = None,
     ) -> list[SearchResult]:
-        query_tokens = tokenize(query)
+        query_tokens = set(tokenize(query))
         if not query_tokens or not self.chunks:
             return []
 
