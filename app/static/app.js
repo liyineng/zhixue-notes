@@ -23,6 +23,10 @@ const state = {
   renderGeneration: 0,
   renderTask: null,
   viewerGeneration: 0,
+  draftImages: [],
+  imageTextEdited: false,
+  activeCitation: 1,
+  highlightMessageId: "",
 };
 
 const dom = {
@@ -65,11 +69,27 @@ const ui = Object.fromEntries([
   "source-search", "search-results", "select-all-sources", "note-count", "note-list",
   "new-note", "export-notes", "note-dialog", "note-form", "note-title", "note-content",
   "note-sources", "close-note", "delete-note", "export-note", "save-note", "clear-chat",
+  "question-image-input", "attach-question-image", "question-image-draft", "question-image-list", "question-image-text", "highlight-legend",
 ].map((id) => [id, document.getElementById(id)]));
 const emptyChatTemplate = dom.emptyChat.outerHTML;
 let currentNote = null;
 let noteSaving = false;
 let chatPollTimer = null;
+
+const citationPalette = [
+  ["#2563eb", "rgba(37,99,235,.19)"], ["#047857", "rgba(5,150,105,.20)"],
+  ["#b45309", "rgba(245,158,11,.23)"], ["#7c3aed", "rgba(124,58,237,.19)"],
+  ["#be185d", "rgba(219,39,119,.19)"], ["#0e7490", "rgba(6,182,212,.21)"],
+  ["#b91c1c", "rgba(239,68,68,.18)"], ["#4d7c0f", "rgba(132,204,22,.22)"],
+  ["#9a3412", "rgba(234,88,12,.19)"], ["#475569", "rgba(100,116,139,.21)"],
+  ["#4338ca", "rgba(99,102,241,.19)"], ["#0f766e", "rgba(20,184,166,.20)"],
+];
+function citationTone(index) { return citationPalette[(Math.max(1, Number(index) || 1) - 1) % citationPalette.length]; }
+function colorCitation(element, index) {
+  const [color, background] = citationTone(index);
+  element.style.setProperty("--citation-color", color);
+  element.style.setProperty("--citation-bg", background);
+}
 
 function noteDirty() {
   return ui["note-title"].value !== (currentNote?.title || "") ||
@@ -103,6 +123,8 @@ function setBusy(busy) {
   state.busy = busy;
   [dom.sendButton, dom.summaryButton, dom.uploadButton, ui["notebook-select"],
     ui["new-notebook"], ui["rename-notebook"], ui["delete-notebook"], ui["clear-chat"]].forEach((el) => el.disabled = busy);
+  ui["attach-question-image"].disabled = busy;
+  document.querySelectorAll(".draft-remove").forEach((button) => button.disabled = busy);
 }
 
 async function loadNotebooks() {
@@ -124,6 +146,8 @@ async function switchNotebook(id) {
   window.clearTimeout(chatPollTimer);
   state.chatPending = false;
   state.notebookId = id;
+  state.draftImages = [];
+  renderDraftImages();
   localStorage.setItem("zhixue-notebook", id);
   state.selectedSources.clear();
   state.documents = [];
@@ -307,6 +331,8 @@ function resetViewer() {
   state.pdfPageCount = 0;
   state.pdfPage = 1;
   state.highlightLines = [];
+  ui["highlight-legend"].hidden = true;
+  ui["highlight-legend"].replaceChildren();
   dom.highlightLayer.replaceChildren();
   dom.canvas.width = 0;
   dom.canvas.height = 0;
@@ -361,6 +387,7 @@ async function openPdf(documentId, pageNumber, lines = []) {
       state.renderTask?.cancel();
       state.renderTask = null;
       dom.highlightLayer.replaceChildren();
+      ui["highlight-legend"].hidden = true;
       dom.canvas.width = 0;
       dom.canvas.height = 0;
       state.pdfLoadingTask?.destroy().catch(() => {});
@@ -441,19 +468,58 @@ function drawHighlights(viewport) {
   const lines = state.highlightLines.filter(
     (line) => Number(line.page) === Number(state.pdfPage) && Array.isArray(line.bbox)
   );
+  const grouped = new Map();
   for (const line of lines) {
+    const key = line.bbox.map((v) => v.toFixed(2)).join(",");
+    if (!grouped.has(key)) grouped.set(key, { ...line, indices: new Set() });
+    grouped.get(key).indices.add(line.citationIndex || state.activeCitation);
+  }
+  const labelled = new Set();
+  for (const line of grouped.values()) {
     // PyMuPDF boxes start at the crop area's top left; PDF.js accepts PDF bottom-left coordinates.
     const [left, , , top] = viewport.viewBox;
     const [x1, y1] = viewport.convertToViewportPoint(left + line.bbox[0], top - line.bbox[1]);
     const [x2, y2] = viewport.convertToViewportPoint(left + line.bbox[2], top - line.bbox[3]);
     const box = document.createElement("div");
     box.className = "highlight-box";
+    const indices = [...line.indices];
+    const active = indices.includes(Number(state.activeCitation));
+    const index = active ? state.activeCitation : indices[0];
+    colorCitation(box, index);
+    box.dataset.citations = indices.join(",");
+    box.classList.toggle("active-highlight", active);
+    if (indices.length > 1) box.style.background = `linear-gradient(90deg, ${indices.map((n) => citationTone(n)[1]).join(",")})`;
     box.style.left = `${Math.min(x1, x2)}px`;
     box.style.top = `${Math.min(y1, y2)}px`;
     box.style.width = `${Math.abs(x2 - x1)}px`;
     box.style.height = `${Math.abs(y2 - y1)}px`;
+    for (const number of indices) {
+      if (labelled.has(number)) continue;
+      const badge = document.createElement("span");
+      badge.className = "highlight-label";
+      badge.textContent = `[${number}]`;
+      colorCitation(badge, number);
+      box.append(badge);
+      labelled.add(number);
+    }
     dom.highlightLayer.append(box);
   }
+  ui["highlight-legend"].replaceChildren();
+  for (const index of [...new Set(lines.map((line) => line.citationIndex || state.activeCitation))].sort((a, b) => a - b)) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "citation-ref";
+    button.textContent = `[${index}]`;
+    button.setAttribute("aria-label", `查看引用 ${index}`);
+    button.setAttribute("aria-pressed", String(Number(index) === Number(state.activeCitation)));
+    colorCitation(button, index);
+    button.addEventListener("click", () => {
+      const citation = state.messageCitations.get(state.highlightMessageId)?.find((c) => c.index === index);
+      if (citation) showCitation(citation, state.highlightMessageId, index);
+    });
+    ui["highlight-legend"].append(button);
+  }
+  ui["highlight-legend"].hidden = !lines.length;
 }
 
 function renderInline(text) {
@@ -510,6 +576,23 @@ function addMessage(role, text, options = {}) {
     body.className = "message-body";
     body.textContent = text;
     article.append(body);
+    if (options.images?.length) {
+      const images = document.createElement("div");
+      images.className = "message-images";
+      for (const item of options.images) {
+        const link = document.createElement("a");
+        link.href = item.url;
+        link.target = "_blank";
+        link.rel = "noopener";
+        const image = document.createElement("img");
+        image.src = item.url;
+        image.alt = item.name;
+        link.append(image);
+        images.append(link);
+      }
+      article.append(images);
+    }
+    if (options.imageText) addRecognizedText(article, options.imageText, options.imageMode);
   } else {
     const label = document.createElement("div");
     label.className = "message-label";
@@ -544,6 +627,7 @@ function updateAssistantMessage(messageId, answer, citations, mode, sourceMode, 
     queryTerms: options.question ? extractSearchTerms(options.question) : window.__lastQuestionTerms || [] });
   body.querySelectorAll(".citation-ref").forEach((button) => {
     button.dataset.messageId = messageId;
+    colorCitation(button, button.dataset.citation);
   });
   if (mode === "extractive") {
     const note = document.createElement("div");
@@ -565,6 +649,7 @@ function updateAssistantMessage(messageId, answer, citations, mode, sourceMode, 
       button.className = "citation-card";
       button.dataset.messageId = messageId;
       button.dataset.citation = String(index + 1);
+      colorCitation(button, citation.index);
       button.innerHTML = `
         <span class="citation-index">${index + 1}</span>
         <span>
@@ -594,20 +679,103 @@ function setAssistantError(messageId, error) {
   article.querySelector(".message-body").textContent = error.message;
 }
 
+function addRecognizedText(article, text, mode) {
+  if (!article) return;
+  const details = document.createElement("details");
+  details.className = "image-recognition";
+  const summary = document.createElement("summary");
+  summary.textContent = `识别到的题目（${mode === "vision" ? "视觉模型" : mode === "manual" ? "已校对" : "本机 OCR"}）`;
+  const body = document.createElement("div");
+  body.textContent = text;
+  details.append(summary, body);
+  article.append(details);
+}
+
+function renderDraftImages() {
+  ui["question-image-draft"].hidden = !state.draftImages.length;
+  ui["question-image-list"].replaceChildren();
+  state.imageTextEdited = false;
+  ui["question-image-text"].value = state.draftImages.map((image) => image.ocr_text || "").join("\n\n").slice(0, 20000);
+  for (const image of state.draftImages) {
+    const item = document.createElement("div");
+    item.className = "draft-image";
+    const preview = document.createElement("img");
+    preview.src = image.url;
+    preview.alt = image.name;
+    const name = document.createElement("span");
+    name.textContent = image.name;
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "draft-remove";
+    remove.textContent = "×";
+    remove.setAttribute("aria-label", `移除图片 ${image.name}`);
+    remove.addEventListener("click", async () => {
+      if (state.busy) return;
+      if (state.imageTextEdited && !window.confirm("移除图片会重置校对文字，继续？")) return;
+      try {
+        await api(`/api/question-images/${image.id}`, { method: "DELETE" });
+        state.draftImages = state.draftImages.filter((item) => item.id !== image.id);
+        renderDraftImages();
+      } catch (error) { showToast(error.message, true); }
+    });
+    item.append(preview, name, remove);
+    ui["question-image-list"].append(item);
+  }
+}
+
+async function attachQuestionImages(files) {
+  if (state.busy) return showToast("请等待当前操作完成。");
+  if (state.draftImages.length + files.length > 3) return showToast("每次最多上传 3 张题目图片。", true);
+  if (state.imageTextEdited && !window.confirm("更换图片会重置校对文字，继续？")) return;
+  setBusy(true);
+  try {
+    for (const file of files) {
+      if (file.size > 10 * 1024 * 1024) throw new Error("每张题目图片最多 10 MB。");
+      showToast(`正在识别题目：${file.name}`);
+      const body = new FormData();
+      body.append("file", file);
+      const data = await api(`/api/question-images?notebook_id=${encodeURIComponent(state.notebookId)}`, { method: "POST", body });
+      state.draftImages.push(data.image);
+    }
+    showToast("图片已添加，可直接发送或展开校对题目文字。");
+  } catch (error) { showToast(error.message, true); }
+  finally {
+    renderDraftImages();
+    ui["question-image-input"].value = "";
+    setBusy(false);
+  }
+}
+
+ui["attach-question-image"].addEventListener("click", () => ui["question-image-input"].click());
+ui["question-image-input"].addEventListener("change", (event) => attachQuestionImages([...event.target.files]));
+ui["question-image-text"].addEventListener("input", () => { state.imageTextEdited = true; });
+dom.questionInput.addEventListener("paste", (event) => {
+  const images = [...(event.clipboardData?.files || [])].filter((file) => file.type.startsWith("image/"));
+  if (images.length) { event.preventDefault(); attachQuestionImages(images); }
+});
+dom.askForm.addEventListener("dragover", (event) => event.preventDefault());
+dom.askForm.addEventListener("drop", (event) => {
+  event.preventDefault();
+  const images = [...(event.dataTransfer?.files || [])].filter((file) => file.type.startsWith("image/"));
+  if (images.length) attachQuestionImages(images);
+});
+
 async function askQuestion(question) {
   const text = question.trim();
-  if (!text) return;
+  const images = [...state.draftImages];
+  if (!text && !images.length) return;
   if (state.busy) return showToast("请等待当前回答完成。");
   if (state.documents.length && !selectedIds().length) return showToast("请至少勾选一个来源。", true);
   window.__lastQuestionTerms = extractSearchTerms(text);
-  addMessage("user", text);
+  const userId = addMessage("user", text || "请解答图片中的题目，并结合选中的课程资料。", { images });
   const assistantId = addMessage("assistant", "", { loading: true });
   setBusy(true);
   try {
     const data = await api("/api/ask", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ question: text, notebook_id: state.notebookId, document_ids: selectedIds() }),
+      body: JSON.stringify({ question: text, notebook_id: state.notebookId, document_ids: selectedIds(),
+        image_ids: images.map((image) => image.id), image_text: state.imageTextEdited ? ui["question-image-text"].value : null }),
     });
     updateAssistantMessage(
       assistantId,
@@ -616,9 +784,13 @@ async function askQuestion(question) {
       data.mode,
       data.source_mode
     );
+    if (data.image_question_text) addRecognizedText(dom.messages.querySelector(`[data-message-id="${userId}"]`), data.image_question_text, data.image_recognition_mode);
+    state.draftImages = [];
+    renderDraftImages();
   } catch (error) {
     setAssistantError(assistantId, error);
     showToast(error.message, true);
+    if (!dom.questionInput.value) dom.questionInput.value = text;
   } finally {
     setBusy(false);
     dom.questionInput.focus();
@@ -654,24 +826,36 @@ function plainSourceText(citation) {
 }
 
 function showCitation(citation, messageId, citationIndex) {
+  if (citation.document_kind !== "pdf") resetViewer();
+  state.activeCitation = Number(citationIndex);
+  state.highlightMessageId = messageId;
+  colorCitation(dom.sourceText, citationIndex);
   dom.sourceText.innerHTML = `
-    <strong>${escapeHtml(citation.document_name)}${citation.page ? ` · 第 ${citation.page} 页` : ""}</strong><br />
+    <strong class="source-citation-label">[${Number(citationIndex)}] ${escapeHtml(citation.document_name)}${citation.page ? ` · 第 ${citation.page} 页` : ""}</strong><br />
     ${plainSourceText(citation)}
   `;
   if (citation.document_kind === "pdf") {
     setMobilePane("viewer");
     const terms = (citation.queryTerms || []).filter((term) => term.length >= 2);
-    const matchingLines = (citation.lines || []).filter((line) => {
+    const relevantLines = (ref) => {
+      const matched = (ref.lines || []).filter((line) => {
       const lineText = String(line.text || "").toLowerCase();
       return terms.some((term) => lineText.includes(String(term).toLowerCase()));
-    });
+      });
+      return matched.length ? matched : ref.lines || [];
+    };
+    const matchingLines = relevantLines(citation);
     const targetPage = matchingLines[0]?.page || citation.page || 1;
+    const references = state.messageCitations.get(messageId) || [citation];
+    const highlightLines = references.filter((ref) => ref.document_id === citation.document_id)
+      .flatMap((ref) => relevantLines(ref).map((line) => ({ ...line, citationIndex: ref.index })));
     openPdf(
       citation.document_id,
       targetPage,
-      matchingLines.length ? matchingLines : citation.lines || []
+      highlightLines
     );
   } else {
+    ui["highlight-legend"].hidden = true;
     setMobilePane("viewer");
     dom.viewerEmpty.hidden = false;
     dom.viewerScroll.hidden = true;
@@ -679,8 +863,7 @@ function showCitation(citation, messageId, citationIndex) {
   }
   const article = dom.messages.querySelector(`[data-message-id="${messageId}"]`);
   article?.querySelectorAll(".citation-card").forEach((item) => {
-    item.style.borderColor =
-      item.dataset.citation === String(citationIndex) ? "#2563eb" : "";
+    item.setAttribute("aria-pressed", String(item.dataset.citation === String(citationIndex)));
   });
 }
 
@@ -707,6 +890,10 @@ async function loadSettings() {
   document.querySelector("#temperature").value = state.settings.temperature ?? 0.2;
   document.querySelector("#max-tokens").value = state.settings.max_tokens ?? 1400;
   document.querySelector("#top-k").value = state.settings.top_k ?? 6;
+  document.querySelector("#vision-model").value = state.settings.vision_model || "";
+  document.querySelector("#vision-base-url").value = state.settings.vision_base_url || "";
+  document.querySelector("#vision-api-key").value = "";
+  document.querySelector("#vision-api-key").placeholder = state.settings.vision_api_key_set ? "已保存，留空保留" : "独立接口使用对应密钥";
 }
 
 async function saveSettings(event) {
@@ -718,6 +905,9 @@ async function saveSettings(event) {
     temperature: Number(document.querySelector("#temperature").value),
     max_tokens: Number(document.querySelector("#max-tokens").value),
     top_k: Number(document.querySelector("#top-k").value),
+    vision_model: document.querySelector("#vision-model").value.trim(),
+    vision_base_url: document.querySelector("#vision-base-url").value.trim(),
+    vision_api_key: document.querySelector("#vision-api-key").value.trim(),
   };
   try {
     state.settings = await api("/api/settings", {
@@ -869,7 +1059,8 @@ async function loadChat(polling = false) {
   state.messageCitations.clear();
   state.answers.clear();
   for (const exchange of exchanges) {
-    addMessage("user", exchange.question, { id: `user-${exchange.id}` });
+    addMessage("user", exchange.question, { id: `user-${exchange.id}`, images: exchange.images,
+      imageText: exchange.result.image_question_text, imageMode: exchange.result.image_recognition_mode });
     const id = addMessage("assistant", "", { id: exchange.id, loading: true });
     if (exchange.status === "complete") {
       const result = exchange.result;

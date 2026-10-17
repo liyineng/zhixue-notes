@@ -143,15 +143,24 @@
             </div>
           </div>
           <form id="ask-form" class="composer">
+            <input id="question-image-input" type="file" accept="image/png,image/jpeg,image/webp" multiple hidden />
+            <div id="question-image-draft" class="question-image-draft" hidden>
+              <div id="question-image-list" class="question-image-list"></div>
+              <details><summary>题目文字（可校对）</summary><textarea id="question-image-text" rows="4" maxlength="20000" placeholder="OCR 未识别清楚时，可在这里填写或更正题目。"></textarea></details>
+              <small>文字题可直接识别；公式、图表建议校对文字或配置图片识别模型。</small>
+            </div>
             <textarea
               id="question-input"
               rows="2"
               placeholder="输入问题，Enter 发送，Shift+Enter 换行"
               maxlength="4000"
             ></textarea>
+            <div class="composer-actions">
+            <button id="attach-question-image" class="icon-button" type="button" aria-label="上传题目图片" title="上传题目图片，也可粘贴截图">图片</button>
             <button id="send-button" class="send-button" type="submit" aria-label="发送问题">
               <svg class="icon"><use href="#i-send"></use></svg>
             </button>
+            </div>
           </form>
         </section>
 
@@ -175,6 +184,7 @@
               </button>
             </div>
           </div>
+          <div id="highlight-legend" class="highlight-legend" hidden></div>
           <div id="viewer-stage" class="viewer-stage">
             <div id="viewer-empty" class="viewer-empty">
               <svg class="icon large"><use href="#i-file"></use></svg>
@@ -233,6 +243,14 @@
             <input id="top-k" type="number" min="1" max="12" step="1" value="6" />
           </label>
         </div>
+        <details class="vision-settings">
+          <summary>图片识别模型（选填）</summary>
+          <p>未填写模型时使用本机 OCR。复杂公式、图表可填写支持图片的模型。</p>
+          <label><span>图片识别模型名称</span><input id="vision-model" type="text" placeholder="填写服务商提供的视觉模型名称" /></label>
+          <label><span>独立接口地址（留空沿用问答接口）</span><input id="vision-base-url" type="url" placeholder="https://你的服务商/v1" /></label>
+          <label><span>图片识别 API Key</span><input id="vision-api-key" type="password" autocomplete="off" placeholder="未单独设置接口时，可沿用问答密钥" /></label>
+          <p>单独填写接口地址时，请填写对应密钥；本地免密服务可留空。</p>
+        </details>
         <p class="settings-note">密钥只保存在本机 data 目录，不会写入公开仓库。</p>
         <div class="dialog-actions">
           <button id="cancel-settings" class="button ghost" type="button">取消</button>

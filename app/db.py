@@ -66,6 +66,15 @@ CREATE TABLE IF NOT EXISTS chat_exchanges (
     created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_chat_notebook ON chat_exchanges(notebook_id, sequence);
+
+CREATE TABLE IF NOT EXISTS question_images (
+    id TEXT PRIMARY KEY,
+    notebook_id TEXT NOT NULL REFERENCES notebooks(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    path TEXT NOT NULL,
+    ocr_text TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+);
 """
 
 DEFAULT_SETTINGS: dict[str, Any] = {
@@ -75,6 +84,9 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "temperature": 0.2,
     "max_tokens": 1400,
     "top_k": 6,
+    "vision_model": "",
+    "vision_base_url": "",
+    "vision_api_key": "",
 }
 
 
@@ -100,6 +112,9 @@ def connection() -> Iterator[sqlite3.Connection]:
 def init_db() -> None:
     with connection() as conn:
         conn.executescript(SCHEMA)
+        chat_columns = {row["name"] for row in conn.execute("PRAGMA table_info(chat_exchanges)")}
+        if "images_json" not in chat_columns:
+            conn.execute("ALTER TABLE chat_exchanges ADD COLUMN images_json TEXT NOT NULL DEFAULT '[]'")
         conn.execute("""UPDATE chat_exchanges SET status='error', result_json=? WHERE status='pending'""",
                      (json.dumps({"detail": "上次生成未完成，请重新提问。"}, ensure_ascii=False),))
         conn.execute(
@@ -329,11 +344,13 @@ def delete_note(note_id: str) -> None:
         conn.execute("DELETE FROM notes WHERE id=?", (note_id,))
 
 
-def start_exchange(exchange_id: str, notebook_id: str, question: str) -> None:
+def start_exchange(exchange_id: str, notebook_id: str, question: str,
+                   images: list[dict[str, Any]] | None = None) -> None:
     with connection() as conn:
-        conn.execute("""INSERT INTO chat_exchanges(id, notebook_id, question, status, created_at)
-                        VALUES (?, ?, ?, 'pending', ?)""",
-                     (exchange_id, notebook_id, question, datetime.now(UTC).isoformat()))
+        conn.execute("""INSERT INTO chat_exchanges(id, notebook_id, question, status, created_at, images_json)
+                        VALUES (?, ?, ?, 'pending', ?, ?)""",
+                     (exchange_id, notebook_id, question, datetime.now(UTC).isoformat(),
+                      json.dumps(images or [], ensure_ascii=False)))
 
 
 def finish_exchange(exchange_id: str, result: dict[str, Any], *, error: bool = False) -> None:
@@ -350,6 +367,7 @@ def list_exchanges(notebook_id: str) -> list[dict[str, Any]]:
     for row in rows:
         item = _row_to_dict(row)
         item["result"] = json.loads(item.pop("result_json"))
+        item["images"] = json.loads(item.pop("images_json"))
         result.append(item)
     return result
 
@@ -357,3 +375,27 @@ def list_exchanges(notebook_id: str) -> list[dict[str, Any]]:
 def clear_exchanges(notebook_id: str) -> None:
     with connection() as conn:
         conn.execute("DELETE FROM chat_exchanges WHERE notebook_id=?", (notebook_id,))
+
+
+def insert_question_image(image: dict[str, Any]) -> None:
+    with connection() as conn:
+        conn.execute("INSERT INTO question_images VALUES (?, ?, ?, ?, ?, ?)",
+                     (image["id"], image["notebook_id"], image["name"], image["path"],
+                      image["ocr_text"], datetime.now(UTC).isoformat()))
+
+
+def get_question_image(image_id: str) -> dict[str, Any] | None:
+    with connection() as conn:
+        row = conn.execute("SELECT * FROM question_images WHERE id=?", (image_id,)).fetchone()
+    return _row_to_dict(row) if row else None
+
+
+def notebook_images(notebook_id: str) -> list[dict[str, Any]]:
+    with connection() as conn:
+        rows = conn.execute("SELECT * FROM question_images WHERE notebook_id=?", (notebook_id,)).fetchall()
+    return [_row_to_dict(row) for row in rows]
+
+
+def delete_question_image(image_id: str) -> None:
+    with connection() as conn:
+        conn.execute("DELETE FROM question_images WHERE id=?", (image_id,))

@@ -446,7 +446,8 @@ select { border: 1px solid var(--line-strong); border-radius: 8px; background: w
 
 .message.user {
   display: flex;
-  justify-content: flex-end;
+  flex-direction: column;
+  align-items: flex-end;
 }
 
 .message.user .message-body {
@@ -493,10 +494,10 @@ select { border: 1px solid var(--line-strong); border-radius: 8px; background: w
   height: 21px;
   margin: 0 2px;
   padding: 0 6px;
-  border: 1px solid #b7caed;
+  border: 1px solid var(--citation-color, #2563eb);
   border-radius: 6px;
-  background: var(--blue-soft);
-  color: var(--blue);
+  background: var(--citation-bg, #e8f0ff);
+  color: var(--citation-color, #2563eb);
   font-size: 12px;
   font-weight: 700;
   vertical-align: 1px;
@@ -523,9 +524,10 @@ select { border: 1px solid var(--line-strong); border-radius: 8px; background: w
 }
 
 .citation-card:hover {
-  border-color: #b7caed;
-  background: var(--blue-soft);
+  border-color: var(--citation-color, #2563eb);
+  background: var(--citation-bg, #e8f0ff);
 }
+.citation-card[aria-pressed="true"] { border-color: var(--citation-color); box-shadow: 0 0 0 1px var(--citation-color); }
 
 .citation-index {
   display: grid;
@@ -533,7 +535,7 @@ select { border: 1px solid var(--line-strong); border-radius: 8px; background: w
   height: 28px;
   place-items: center;
   border-radius: 6px;
-  background: var(--navy);
+  background: var(--citation-color, #15395f);
   color: var(--white);
   font-size: 12px;
   font-weight: 700;
@@ -706,10 +708,34 @@ select { border: 1px solid var(--line-strong); border-radius: 8px; background: w
 
 .highlight-box {
   position: absolute;
-  border: 1px solid rgba(180, 83, 9, 0.82);
+  border: 1px solid var(--citation-color, #2563eb);
   border-radius: 2px;
-  background: rgba(250, 204, 21, 0.32);
+  background: var(--citation-bg, rgba(37,99,235,.19));
 }
+.highlight-box.active-highlight { outline: 1px solid var(--citation-color); }
+.highlight-label { display: inline-block; position: relative; top: -13px; margin-right: 3px; padding: 0 3px; background: var(--citation-color); color: white; border-radius: 3px; font-size: 10px; line-height: 14px; }
+.highlight-legend { display: flex; gap: 6px; padding: 8px 18px; background: white; border-bottom: 1px solid var(--line); }
+.highlight-legend .citation-ref[aria-pressed="true"] { outline: 2px solid var(--citation-color); outline-offset: 1px; }
+.source-citation-label { color: var(--citation-color, var(--ink)); }
+#source-text mark { color: inherit; background: var(--citation-bg, #fef3c7); }
+.composer-actions { display: grid; gap: 5px; }
+.composer-actions .icon-button { padding: 0 4px; border-color: var(--line); font-size: 11px; }
+.question-image-draft { grid-column: 1 / -1; max-height: 260px; overflow-y: auto; }
+.question-image-list, .message-images { display: flex; gap: 10px; flex-wrap: wrap; }
+.draft-image { position: relative; width: 90px; }
+.draft-image img { width: 90px; height: 70px; object-fit: contain; border: 1px solid var(--line); border-radius: 7px; }
+.draft-image span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 10px; }
+.draft-remove { position: absolute; top: 0; right: 0; width: 22px; height: 22px; border: 0; border-radius: 50%; background: var(--ink); color: white; cursor: pointer; }
+.question-image-draft details { margin-top: 8px; font-size: 12px; }
+.question-image-draft textarea { width: 100%; resize: vertical; padding: 8px; border: 1px solid var(--line); border-radius: 6px; }
+.question-image-draft small { display: block; margin-top: 7px; color: var(--muted); font-size: 11px; }
+.message-images { justify-content: flex-end; margin-top: 8px; }
+.message-images img { display: block; max-width: min(280px, 100%); max-height: 180px; object-fit: contain; border-radius: 8px; }
+.image-recognition { max-width: 100%; margin-top: 10px; color: var(--muted); font-size: 12px; text-align: left; }
+.image-recognition div { white-space: pre-wrap; padding: 10px; max-height: 200px; overflow-y: auto; background: var(--paper); color: var(--ink); }
+.vision-settings { margin: 15px 0; font-size: 13px; }
+.vision-settings summary { cursor: pointer; margin-bottom: 12px; }
+.vision-settings p { color: var(--muted); font-size: 12px; line-height: 1.6; }
 
 .source-panel {
   max-height: 190px;

@@ -2,6 +2,7 @@
 import sqlite3
 import tempfile
 import unittest
+import io
 from contextlib import closing
 from pathlib import Path
 from unittest.mock import patch
@@ -17,9 +18,12 @@ class WorkspaceTests(unittest.TestCase):
         root = Path(self.temp.name)
         self.db_patch = patch.object(db, "DB_PATH", root / "test.db")
         self.upload_patch = patch.object(main, "UPLOAD_DIR", root / "uploads")
+        self.image_patch = patch.object(main, "QUESTION_IMAGE_DIR", root / "images")
         self.db_patch.start()
         self.upload_patch.start()
+        self.image_patch.start()
         main.UPLOAD_DIR.mkdir()
+        main.QUESTION_IMAGE_DIR.mkdir()
         main._invalidate_index()
         self.client = TestClient(main.app)
         self.client.__enter__()
@@ -27,6 +31,7 @@ class WorkspaceTests(unittest.TestCase):
     def tearDown(self):
         self.client.__exit__(None, None, None)
         self.upload_patch.stop()
+        self.image_patch.stop()
         self.db_patch.stop()
         main._invalidate_index()
         self.temp.cleanup()
@@ -143,6 +148,67 @@ class WorkspaceTests(unittest.TestCase):
         self.assertEqual(history[2]["status"], "error")
         self.assertIn("未完成", history[2]["result"]["detail"])
         self.assertEqual(self.client.get("/api/notebooks/missing/chat").status_code, 404)
+
+    def image_bytes(self):
+        from PIL import Image
+        output = io.BytesIO()
+        Image.new("RGB", (80, 60), "white").save(output, "PNG")
+        return output.getvalue()
+
+    def test_question_image_solves_with_scoped_material_and_restores_original(self):
+        notebook_id = self.notebook("图片题目")
+        document_id = self.upload(notebook_id, "协议.md", "网络协议规定通信规则。")
+        with patch.object(main, "local_ocr", return_value="网络协议是什么？"):
+            upload = self.client.post("/api/question-images", params={"notebook_id": notebook_id},
+                                      files={"file": ("题目.png", self.image_bytes(), "image/png")})
+        self.assertEqual(upload.status_code, 201, upload.text)
+        image = upload.json()["image"]
+        self.assertNotIn("path", image)
+
+        async def answer(question, contexts, *args):
+            self.assertIn("请解释网络协议的作用", question)
+            self.assertTrue(contexts)
+            self.assertTrue(all(c["document_id"] == document_id for c in contexts))
+            return "结合课程资料回答 [1]。"
+
+        with patch.object(main, "answer_question", side_effect=answer):
+            result = self.client.post("/api/ask", json={"notebook_id": notebook_id, "image_ids": [image["id"]],
+                                      "image_text": "请解释网络协议的作用"})
+        self.assertEqual(result.status_code, 200, result.text)
+        self.assertEqual(result.json()["image_recognition_mode"], "manual")
+        history = db.list_exchanges(notebook_id)
+        self.assertEqual(history[0]["images"][0]["id"], image["id"])
+        self.assertEqual(self.client.get(image["url"]).status_code, 200)
+        other = self.notebook("另一课程")
+        self.assertEqual(self.client.post("/api/ask", json={"notebook_id": other, "image_ids": [image["id"]]}).status_code, 400)
+        retained = self.client.delete(f"/api/question-images/{image['id']}")
+        self.assertTrue(retained.json()["retained_in_history"])
+        self.client.delete(f"/api/notebooks/{notebook_id}/chat")
+        self.assertEqual(self.client.get(image["url"]).status_code, 404)
+
+    def test_invalid_question_images_are_rejected_and_blank_ocr_does_not_guess(self):
+        result = self.client.post("/api/question-images", files={"file": ("bad.svg", b"<svg/>", "image/png")})
+        self.assertEqual(result.status_code, 400)
+        with patch.object(main, "local_ocr", return_value=""):
+            result = self.client.post("/api/question-images", files={"file": ("empty.png", self.image_bytes(), "image/png")})
+        image_id = result.json()["image"]["id"]
+        with patch.object(main, "answer_question") as answer:
+            result = self.client.post("/api/ask", json={"image_ids": [image_id]})
+        self.assertEqual(result.status_code, 502)
+        self.assertIn("未识别到题目", result.json()["detail"])
+        answer.assert_not_called()
+        self.assertEqual(self.client.post("/api/ask", json={}).status_code, 400)
+
+    def test_vision_settings_never_expose_secrets(self):
+        result = self.client.put("/api/settings", json={"vision_model": "vision-test", "vision_base_url": "https://vision.example/v1", "vision_api_key": "private-vision-secret"})
+        self.assertEqual(result.status_code, 200)
+        self.assertEqual(result.json()["vision_api_key"], "")
+        self.assertTrue(result.json()["vision_api_key_set"])
+        self.assertNotIn("private-vision-secret", self.client.get("/api/settings").text)
+        self.client.put("/api/settings", json={"vision_api_key": ""})
+        self.assertEqual(db.get_settings()["vision_api_key"], "private-vision-secret")
+        self.client.put("/api/settings", json={"vision_base_url": "https://another-provider.example/v1"})
+        self.assertEqual(db.get_settings()["vision_api_key"], "")
 
 
 class MigrationTests(unittest.TestCase):

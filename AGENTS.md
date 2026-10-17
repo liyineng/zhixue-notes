@@ -9,3 +9,4 @@
 - The user's current preference is to polish existing features without adding new ones. They have now explicitly requested that questions survive refreshing the page: persisting notebook-scoped questions, answers and citations is authorized. Webpage imports, flashcards and other new modules still require renewed authorization.
 - Run `.venv/bin/python -m unittest discover -s tests -v` for backend behavior changes. Browser smoke tests are in `scripts/smoke-workspace.mjs`; they use temporary notebooks and mocked model answers and clean up their data.
 - Keep vendor licenses intact. Do not rewrite third-party files to resolve formatting-only warnings.
+- Image questions (upload, paste, OCR or configurable vision transcription, editable recognized text and notebook-scoped course answers) and per-citation colors are explicitly authorized. Image attachments and recognition results must survive refresh with the question; keep image files local and out of Git.

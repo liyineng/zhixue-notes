@@ -20,11 +20,13 @@ from .config import (
     STATIC_DIR,
     SUPPORTED_SUFFIXES,
     UPLOAD_DIR,
+    QUESTION_IMAGE_DIR,
     ensure_directories,
 )
 from .llm import analyze_question, answer_question, make_summary, model_configured
 from .parsers import UnsupportedDocument, parse_document
 from .retrieval import BM25Index, excerpt, focus_source
+from .question_images import MAX_IMAGE_BYTES, normalize_image, local_ocr, read_question
 from urllib.parse import quote
 
 mimetypes.add_type("text/javascript", ".mjs")
@@ -63,7 +65,9 @@ app = FastAPI(
 
 
 class AskRequest(BaseModel):
-    question: str = Field(min_length=1, max_length=4000)
+    question: str = Field(default="", max_length=4000)
+    image_ids: list[str] = Field(default_factory=list, max_length=3)
+    image_text: str | None = Field(default=None, max_length=20000)
     document_ids: list[str] | None = None
     notebook_id: str | None = None
     top_k: int | None = Field(default=None, ge=1, le=12)
@@ -82,6 +86,9 @@ class SettingsRequest(BaseModel):
     temperature: float | None = Field(default=None, ge=0, le=2)
     max_tokens: int | None = Field(default=None, ge=128, le=8192)
     top_k: int | None = Field(default=None, ge=1, le=12)
+    vision_model: str | None = Field(default=None, max_length=300)
+    vision_base_url: str | None = Field(default=None, max_length=1000)
+    vision_api_key: str | None = Field(default=None, max_length=2000)
 
 
 class NotebookRequest(BaseModel):
@@ -141,9 +148,10 @@ def _name(value: str) -> str:
 
 
 def _public_settings(settings: dict[str, Any]) -> dict[str, Any]:
-    result = {**settings, "api_key": ""}
+    result = {**settings, "api_key": "", "vision_api_key": ""}
     result["api_key_set"] = bool(str(settings.get("api_key", "")).strip())
     result["model_configured"] = model_configured(settings)
+    result["vision_api_key_set"] = bool(str(settings.get("vision_api_key", "")).strip())
     return result
 
 
@@ -242,8 +250,63 @@ def delete_notebook(notebook_id: str) -> dict[str, bool]:
     _notebook(notebook_id)
     if notebook_id == "default":
         raise HTTPException(status_code=409, detail="默认笔记本可重命名，但不能删除。")
+    images = db.notebook_images(notebook_id)
     if not db.delete_empty_notebook(notebook_id):
         raise HTTPException(status_code=409, detail="请先移出资料、删除笔记并清空对话，再删除空笔记本。")
+    for image in images:
+        Path(image["path"]).unlink(missing_ok=True)
+    return {"deleted": True}
+
+
+def _public_image(image: dict[str, Any]) -> dict[str, Any]:
+    return {"id": image["id"], "name": image["name"], "ocr_text": image["ocr_text"],
+            "url": f"/api/question-images/{image['id']}/file"}
+
+
+@app.post("/api/question-images", status_code=201)
+async def upload_question_image(file: UploadFile = File(...), notebook_id: str = "default") -> dict[str, Any]:
+    _notebook(notebook_id)
+    image_id = uuid4().hex
+    path = QUESTION_IMAGE_DIR / f"{image_id}.png"
+    try:
+        content = await file.read(MAX_IMAGE_BYTES + 1)
+        if len(content) > MAX_IMAGE_BYTES:
+            raise HTTPException(status_code=413, detail="每张题目图片最多 10 MB。")
+        await run_in_threadpool(normalize_image, content, path)
+        text = await run_in_threadpool(local_ocr, path)
+        image = {"id": image_id, "notebook_id": notebook_id, "name": Path(file.filename or "题目图片").name[:200],
+                 "path": str(path), "ocr_text": text}
+        db.insert_question_image(image)
+        return {"image": _public_image(image)}
+    except ValueError as exc:
+        path.unlink(missing_ok=True)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception:
+        path.unlink(missing_ok=True)
+        raise
+    finally:
+        await file.close()
+
+
+@app.get("/api/question-images/{image_id}/file")
+def question_image_file(image_id: str) -> FileResponse:
+    image = db.get_question_image(image_id)
+    if not image or not Path(image["path"]).is_file():
+        raise HTTPException(status_code=404, detail="题目图片不存在。")
+    return FileResponse(image["path"], media_type="image/png")
+
+
+@app.delete("/api/question-images/{image_id}")
+def remove_question_image(image_id: str) -> dict[str, bool]:
+    image = db.get_question_image(image_id)
+    if not image:
+        raise HTTPException(status_code=404, detail="题目图片不存在。")
+    linked = any(any(item["id"] == image_id for item in exchange["images"])
+                 for exchange in db.list_exchanges(image["notebook_id"]))
+    if linked:
+        return {"deleted": False, "retained_in_history": True}
+    db.delete_question_image(image_id)
+    Path(image["path"]).unlink(missing_ok=True)
     return {"deleted": True}
 
 
@@ -438,21 +501,29 @@ def get_settings() -> dict[str, Any]:
 def update_settings(payload: SettingsRequest) -> dict[str, Any]:
     current = db.get_settings()
     values = payload.model_dump(exclude_none=True)
-    if "base_url" in values:
-        values["base_url"] = str(values["base_url"]).strip()
-        if values["base_url"] and not values["base_url"].startswith(("http://", "https://")):
+    vision_provider_changed = "vision_base_url" in values and str(values["vision_base_url"]).strip().rstrip("/") != str(current.get("vision_base_url", "")).rstrip("/")
+    if vision_provider_changed and not str(values.get("vision_api_key", "")).strip():
+        values["vision_api_key"] = ""
+    for url_key in ("base_url", "vision_base_url"):
+        if url_key not in values:
+            continue
+        values[url_key] = str(values[url_key]).strip()
+        if values[url_key] and not values[url_key].startswith(("http://", "https://")):
             raise HTTPException(
                 status_code=400,
                 detail="接口地址需要以 http:// 或 https:// 开头。",
             )
-    if "model" in values:
-        values["model"] = str(values["model"]).strip()
-    if "api_key" in values:
-        api_key = str(values["api_key"]).strip()
-        if not api_key and current.get("api_key"):
-            values.pop("api_key")
+    for model_key in ("model", "vision_model"):
+        if model_key in values:
+            values[model_key] = str(values[model_key]).strip()
+    for key in ("api_key", "vision_api_key"):
+        if key not in values:
+            continue
+        api_key = str(values[key]).strip()
+        if not api_key and current.get(key) and not (key == "vision_api_key" and vision_provider_changed):
+            values.pop(key)
         else:
-            values["api_key"] = api_key
+            values[key] = api_key
     merged = db.update_settings(values)
     return _public_settings(merged)
 
@@ -462,19 +533,34 @@ async def ask(payload: AskRequest) -> dict[str, Any]:
     settings = db.get_settings()
     top_k = payload.top_k or int(settings.get("top_k", 6))
     selected_documents = _scope(payload.notebook_id, payload.document_ids)
+    if not payload.question.strip() and not payload.image_ids:
+        raise HTTPException(status_code=400, detail="请输入问题或上传题目图片。")
+    images = []
+    for image_id in dict.fromkeys(payload.image_ids):
+        image = db.get_question_image(image_id)
+        if not image or image["notebook_id"] != (payload.notebook_id or "default"):
+            raise HTTPException(status_code=400, detail="题目图片不在当前笔记本中或已被删除。")
+        images.append(image)
     document_ids = {doc["id"] for doc in selected_documents}
     started = time.perf_counter()
 
     document_names = [document["name"] for document in selected_documents]
     exchange_id = uuid4().hex
-    db.start_exchange(exchange_id, payload.notebook_id or "default", payload.question)
+    question = payload.question.strip() or "请解答图片中的题目，并结合选中的课程资料。"
+    db.start_exchange(exchange_id, payload.notebook_id or "default", question, [_public_image(image) for image in images])
 
     try:
+        image_text, image_mode = await read_question(images, settings, payload.image_text) if images else ("", "")
+        effective_question = question
+        if image_text:
+            effective_question += "\n\n题目图片的识别内容（不确定处请指出，不要猜测缺失条件）：\n" + image_text
         analysis = await analyze_question(
-            payload.question,
+            effective_question,
             document_names,
             settings,
         )
+        if images and document_ids:
+            analysis["needs_retrieval"] = True
         contexts: list[dict[str, Any]] = []
         if analysis["needs_retrieval"] and document_ids:
             if analysis["intent"] == "summary":
@@ -488,7 +574,7 @@ async def ask(payload: AskRequest) -> dict[str, Any]:
                         [
                             analysis["search_query"],
                             *analysis["keywords"],
-                            payload.question,
+                            effective_question,
                         ]
                     )
                 )
@@ -497,16 +583,16 @@ async def ask(payload: AskRequest) -> dict[str, Any]:
                     top_k=top_k,
                     document_ids=document_ids,
                 )
-                if not results and combined_query != payload.question:
+                if not results and combined_query != effective_question:
                     results = _index().search(
-                        payload.question,
+                        effective_question,
                         top_k=top_k,
                         document_ids=document_ids,
                     )
                 contexts = _contexts_for_results(results)
 
         answer = await answer_question(
-            payload.question,
+            effective_question,
             contexts,
             settings,
             document_names,
@@ -527,6 +613,8 @@ async def ask(payload: AskRequest) -> dict[str, Any]:
         "search_query": analysis["search_query"],
         "retrieval_hits": len(contexts),
         "elapsed_ms": elapsed_ms,
+        "image_question_text": image_text,
+        "image_recognition_mode": image_mode,
     }
     db.finish_exchange(exchange_id, result)
     return result
@@ -577,7 +665,13 @@ def chat_history(notebook_id: str) -> dict[str, Any]:
 @app.delete("/api/notebooks/{notebook_id}/chat")
 def clear_chat(notebook_id: str) -> dict[str, bool]:
     _notebook(notebook_id)
+    image_ids = {image["id"] for exchange in db.list_exchanges(notebook_id) for image in exchange["images"]}
     db.clear_exchanges(notebook_id)
+    for image_id in image_ids:
+        image = db.get_question_image(image_id)
+        if image:
+            db.delete_question_image(image_id)
+            Path(image["path"]).unlink(missing_ok=True)
     return {"deleted": True}
 
 
