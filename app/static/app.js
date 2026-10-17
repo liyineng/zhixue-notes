@@ -28,6 +28,7 @@ const state = {
   imageTextEdited: false,
   activeCitation: 1,
   highlightMessageId: "",
+  deletedCount: 0,
 };
 
 const dom = {
@@ -69,7 +70,7 @@ const ui = Object.fromEntries([
   "sources-tab", "notes-tab", "sources-content", "notes-content", "source-search-form",
   "source-search", "search-results", "select-all-sources", "note-count", "note-list",
   "new-note", "export-notes", "note-dialog", "note-form", "note-title", "note-content",
-  "note-sources", "close-note", "delete-note", "export-note", "save-note", "clear-chat",
+  "note-sources", "close-note", "delete-note", "export-note", "save-note", "clear-chat", "undo-chat-delete",
   "question-image-input", "attach-question-image", "question-image-draft", "question-image-list", "question-image-text", "highlight-legend",
 ].map((id) => [id, document.getElementById(id)]));
 const emptyChatTemplate = dom.emptyChat.outerHTML;
@@ -126,6 +127,8 @@ function setBusy(busy) {
     ui["new-notebook"], ui["rename-notebook"], ui["delete-notebook"], ui["clear-chat"]].forEach((el) => el.disabled = busy);
   ui["attach-question-image"].disabled = busy;
   document.querySelectorAll(".draft-remove").forEach((button) => button.disabled = busy);
+  document.querySelectorAll(".delete-exchange").forEach((button) => button.disabled = busy || button.dataset.pending === "true");
+  ui["undo-chat-delete"].disabled = busy || !state.deletedCount;
 }
 
 async function loadNotebooks() {
@@ -191,7 +194,9 @@ async function api(path, options = {}) {
     const detail = Array.isArray(data?.detail)
       ? data.detail.map((item) => item.msg).join("；")
       : data?.detail || `请求失败：HTTP ${response.status}`;
-    throw new Error(detail);
+    const error = new Error(detail);
+    error.chatId = response.headers.get("X-Chat-Id");
+    throw error;
   }
   return data;
 }
@@ -642,6 +647,55 @@ function setAssistantError(messageId, error) {
   article.querySelector(".message-body").textContent = error.message;
 }
 
+function bindExchange(assistantId, userId, exchangeId, pending = false) {
+  if (!exchangeId) return;
+  const assistant = dom.messages.querySelector(`[data-message-id="${assistantId}"]`);
+  const user = dom.messages.querySelector(`[data-message-id="${userId}"]`);
+  if (!assistant || !user) return;
+  assistant.dataset.exchangeId = user.dataset.exchangeId = exchangeId;
+  assistant.querySelector(".delete-exchange")?.remove();
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "button ghost delete-exchange";
+  button.dataset.deleteExchange = exchangeId;
+  button.dataset.pending = String(pending);
+  button.disabled = state.busy || pending;
+  button.textContent = "删除本条对话";
+  button.setAttribute("aria-label", "删除这条问题及回答");
+  assistant.append(button);
+}
+
+function updateUndoButton() {
+  ui["undo-chat-delete"].textContent = state.deletedCount ? `撤销删除 (${state.deletedCount})` : "撤销删除";
+  ui["undo-chat-delete"].disabled = state.busy || !state.deletedCount;
+}
+
+async function deleteExchange(button) {
+  if (state.busy || !window.confirm("删除这条问题及回答？可撤销最近 5 条删除；已保存的笔记和资料不受影响。")) return;
+  const exchangeId = button.dataset.deleteExchange;
+  setBusy(true);
+  try {
+    const result = await api(`/api/notebooks/${encodeURIComponent(state.notebookId)}/chat/${encodeURIComponent(exchangeId)}`, { method: "DELETE" });
+    dom.messages.querySelectorAll(`[data-exchange-id="${exchangeId}"]`).forEach((article) => {
+      const id = article.dataset.messageId;
+      if (state.highlightMessageId === id) { resetViewer(); state.highlightMessageId = ""; }
+      state.messageCitations.delete(id);
+      state.answers.delete(id);
+      article.remove();
+    });
+    if (!dom.messages.querySelector(".message")) { dom.messages.innerHTML = emptyChatTemplate; selectionStatus(); }
+    state.deletedCount = result.deleted_count;
+    updateUndoButton();
+    const removed = new Set(result.deleted_image_ids || []);
+    if (state.draftImages.some((image) => removed.has(image.id))) {
+      state.draftImages = state.draftImages.filter((image) => !removed.has(image.id));
+      renderDraftImages();
+    }
+    showToast("已删除，可点击“撤销删除”恢复。最多保留最近 5 条删除记录。");
+  } catch (error) { showToast(error.message, true); }
+  finally { setBusy(state.chatPending); }
+}
+
 function addRecognizedText(article, text, mode) {
   if (!article) return;
   const details = document.createElement("details");
@@ -747,11 +801,13 @@ async function askQuestion(question) {
       data.mode,
       data.source_mode
     );
+    bindExchange(assistantId, userId, data.chat_id);
     if (data.image_question_text) addRecognizedText(dom.messages.querySelector(`[data-message-id="${userId}"]`), data.image_question_text, data.image_recognition_mode);
     state.draftImages = [];
     renderDraftImages();
   } catch (error) {
     setAssistantError(assistantId, error);
+    bindExchange(assistantId, userId, error.chatId);
     showToast(error.message, true);
     if (!dom.questionInput.value) dom.questionInput.value = text;
   } finally {
@@ -893,7 +949,7 @@ async function generateSummary() {
     return;
   }
   setBusy(true);
-  addMessage("user", "根据当前选中的来源生成一份复习提纲。");
+  const userId = addMessage("user", "根据当前选中的来源生成一份复习提纲。");
   const assistantId = addMessage("assistant", "", { loading: true });
   try {
     const data = await api("/api/summary", {
@@ -902,8 +958,10 @@ async function generateSummary() {
       body: JSON.stringify({ notebook_id: state.notebookId, document_ids: selectedIds() }),
     });
     updateAssistantMessage(assistantId, data.answer, data.citations, data.mode);
+    bindExchange(assistantId, userId, data.chat_id);
   } catch (error) {
     setAssistantError(assistantId, error);
+    bindExchange(assistantId, userId, error.chatId);
     showToast(error.message, true);
   } finally {
     setBusy(false);
@@ -950,6 +1008,8 @@ dom.questionInput.addEventListener("keydown", (event) => {
 });
 
 dom.messages.addEventListener("click", (event) => {
+  const remove = event.target.closest("[data-delete-exchange]");
+  if (remove) { deleteExchange(remove); return; }
   const save = event.target.closest("[data-save-answer]");
   if (save) {
     saveAnswer(save).catch((error) => showToast(error.message, true));
@@ -1016,8 +1076,10 @@ function setLibraryTab(tab) {
 async function loadChat(polling = false) {
   window.clearTimeout(chatPollTimer);
   const notebookId = state.notebookId;
-  const { exchanges } = await api(`/api/notebooks/${encodeURIComponent(notebookId)}/chat`);
+  const { exchanges, deleted_count } = await api(`/api/notebooks/${encodeURIComponent(notebookId)}/chat`);
   if (notebookId !== state.notebookId) return;
+  state.deletedCount = deleted_count || 0;
+  updateUndoButton();
   dom.messages.innerHTML = emptyChatTemplate;
   state.messageCitations.clear();
   state.answers.clear();
@@ -1031,6 +1093,7 @@ async function loadChat(polling = false) {
     } else if (exchange.status === "error") {
       setAssistantError(id, new Error(exchange.result.detail || "上次请求未完成，请重新提问。"));
     }
+    bindExchange(id, `user-${exchange.id}`, exchange.id, exchange.status === "pending");
   }
   selectionStatus();
   state.chatPending = exchanges.some((exchange) => exchange.status === "pending");
@@ -1043,12 +1106,24 @@ async function loadChat(polling = false) {
 }
 
 ui["clear-chat"].addEventListener("click", async () => {
-  if (state.busy || !window.confirm("清空当前笔记本的对话？已保存的笔记和资料不会删除。")) return;
+  if (state.busy || !window.confirm("永久清空当前笔记本的全部对话及删除记录？此操作无法撤销，已保存的笔记和资料不会删除。")) return;
   setBusy(true);
   try {
     await api(`/api/notebooks/${encodeURIComponent(state.notebookId)}/chat`, { method: "DELETE" });
     await loadChat();
     showToast("当前笔记本的对话已清空。");
+  } catch (error) { showToast(error.message, true); }
+  finally { setBusy(state.chatPending); }
+});
+
+ui["undo-chat-delete"].addEventListener("click", async () => {
+  if (state.busy || !state.deletedCount) return;
+  setBusy(true);
+  try {
+    const result = await api(`/api/notebooks/${encodeURIComponent(state.notebookId)}/chat/undo`, { method: "POST" });
+    await loadChat();
+    dom.messages.querySelector(`[data-message-id="${result.chat_id}"]`)?.scrollIntoView({ block: "nearest" });
+    showToast("已恢复最近删除的问题及回答。");
   } catch (error) { showToast(error.message, true); }
   finally { setBusy(state.chatPending); }
 });

@@ -303,7 +303,7 @@ def remove_question_image(image_id: str) -> dict[str, bool]:
     if not image:
         raise HTTPException(status_code=404, detail="题目图片不存在。")
     linked = any(any(item["id"] == image_id for item in exchange["images"])
-                 for exchange in db.list_exchanges(image["notebook_id"]))
+                 for exchange in db.list_exchanges(image["notebook_id"], include_deleted=True))
     if linked:
         return {"deleted": False, "retained_in_history": True}
     db.delete_question_image(image_id)
@@ -598,7 +598,7 @@ async def ask(payload: AskRequest) -> dict[str, Any]:
         answer, contexts = cited_sources(answer, contexts)
     except Exception as exc:
         db.finish_exchange(exchange_id, {"detail": str(exc)}, error=True)
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        raise HTTPException(status_code=502, detail=str(exc), headers={"X-Chat-Id": exchange_id}) from exc
     elapsed_ms = round((time.perf_counter() - started) * 1000)
     result = {
         "chat_id": exchange_id,
@@ -643,7 +643,7 @@ async def summary(payload: SummaryRequest) -> dict[str, Any]:
         answer = await make_summary(contexts, settings)
     except Exception as exc:
         db.finish_exchange(exchange_id, {"detail": str(exc)}, error=True)
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        raise HTTPException(status_code=502, detail=str(exc), headers={"X-Chat-Id": exchange_id}) from exc
     result = {
         "chat_id": exchange_id,
         "answer": answer,
@@ -657,13 +657,13 @@ async def summary(payload: SummaryRequest) -> dict[str, Any]:
 @app.get("/api/notebooks/{notebook_id}/chat")
 def chat_history(notebook_id: str) -> dict[str, Any]:
     _notebook(notebook_id)
-    return {"exchanges": db.list_exchanges(notebook_id)}
+    return {"exchanges": db.list_exchanges(notebook_id), "deleted_count": db.deleted_exchange_count(notebook_id)}
 
 
 @app.delete("/api/notebooks/{notebook_id}/chat")
 def clear_chat(notebook_id: str) -> dict[str, bool]:
     _notebook(notebook_id)
-    image_ids = {image["id"] for exchange in db.list_exchanges(notebook_id) for image in exchange["images"]}
+    image_ids = {image["id"] for exchange in db.list_exchanges(notebook_id, include_deleted=True) for image in exchange["images"]}
     db.clear_exchanges(notebook_id)
     for image_id in image_ids:
         image = db.get_question_image(image_id)
@@ -671,6 +671,30 @@ def clear_chat(notebook_id: str) -> dict[str, bool]:
             db.delete_question_image(image_id)
             Path(image["path"]).unlink(missing_ok=True)
     return {"deleted": True}
+
+
+@app.post("/api/notebooks/{notebook_id}/chat/undo")
+def undo_chat_delete(notebook_id: str) -> dict[str, Any]:
+    _notebook(notebook_id)
+    exchange_id = db.restore_exchange(notebook_id)
+    if exchange_id is None:
+        raise HTTPException(status_code=404, detail="没有可以撤销的删除记录。")
+    return {"restored": True, "chat_id": exchange_id, "deleted_count": db.deleted_exchange_count(notebook_id)}
+
+
+@app.delete("/api/notebooks/{notebook_id}/chat/{exchange_id}")
+def delete_chat_exchange(notebook_id: str, exchange_id: str) -> dict[str, Any]:
+    _notebook(notebook_id)
+    try:
+        deleted = db.delete_exchange(notebook_id, exchange_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if deleted is None:
+        raise HTTPException(status_code=404, detail="这条对话不存在或不属于当前笔记本。")
+    for image in deleted["images"]:
+        Path(image["path"]).unlink(missing_ok=True)
+    return {"deleted": True, "deleted_image_ids": [image["id"] for image in deleted["images"]],
+            "deleted_count": db.deleted_exchange_count(notebook_id)}
 
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")

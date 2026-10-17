@@ -10,3 +10,4 @@
 - Run `.venv/bin/python -m unittest discover -s tests -v` for backend behavior changes. Browser smoke tests are in `scripts/smoke-workspace.mjs`; they use temporary notebooks and mocked model answers and clean up their data.
 - Keep vendor licenses intact. Do not rewrite third-party files to resolve formatting-only warnings.
 - Image questions (upload, paste, OCR or configurable vision transcription, editable recognized text and notebook-scoped course answers) and per-citation colors are explicitly authorized. Image attachments and recognition results must survive refresh with the question; keep image files local and out of Git.
+- Individual question/answer deletion and undo are authorized. Keep the latest five deleted exchanges per notebook for undo across refresh/restart, without limiting active history. Only purge older deleted exchanges and images no longer referenced by active or retained deleted exchanges.

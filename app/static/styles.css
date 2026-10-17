@@ -122,6 +122,9 @@ select { border: 1px solid var(--line-strong); border-radius: 8px; background: w
 .document-move { background: transparent; border: 0; padding: 1px; color: var(--muted); font-size: 10px; cursor: pointer; }
 .save-answer { margin-top: 15px; min-height: 31px; border-color: var(--line); color: var(--teal); font-size: 12px; }
 .save-answer:disabled { opacity: .65; }
+.delete-exchange { margin: 15px 0 0 8px; min-height: 31px; font-size: 12px; color: var(--muted); }
+.delete-exchange:hover:not(:disabled) { color: var(--danger); }
+.delete-exchange:disabled { opacity: .5; }
 .note-dialog { width: min(760px, calc(100vw - 32px)); max-height: 90vh; overflow-y: auto; }
 .note-dialog textarea { width: 100%; resize: vertical; padding: 12px; border: 1px solid var(--line-strong); border-radius: 8px; color: var(--ink); line-height: 1.6; }
 .note-sources { display: grid; gap: 6px; font-size: 12px; margin: 12px 0 20px; }

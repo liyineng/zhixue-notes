@@ -115,6 +115,9 @@ def init_db() -> None:
         chat_columns = {row["name"] for row in conn.execute("PRAGMA table_info(chat_exchanges)")}
         if "images_json" not in chat_columns:
             conn.execute("ALTER TABLE chat_exchanges ADD COLUMN images_json TEXT NOT NULL DEFAULT '[]'")
+        if "deleted_at" not in chat_columns:
+            conn.execute("ALTER TABLE chat_exchanges ADD COLUMN deleted_at TEXT")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_chat_deleted ON chat_exchanges(notebook_id, deleted_at)")
         conn.execute("""UPDATE chat_exchanges SET status='error', result_json=? WHERE status='pending'""",
                      (json.dumps({"detail": "上次生成未完成，请重新提问。"}, ensure_ascii=False),))
         conn.execute(
@@ -359,10 +362,10 @@ def finish_exchange(exchange_id: str, result: dict[str, Any], *, error: bool = F
                      (json.dumps(result, ensure_ascii=False), "error" if error else "complete", exchange_id))
 
 
-def list_exchanges(notebook_id: str) -> list[dict[str, Any]]:
+def list_exchanges(notebook_id: str, *, include_deleted: bool = False) -> list[dict[str, Any]]:
     with connection() as conn:
-        rows = conn.execute("SELECT * FROM chat_exchanges WHERE notebook_id=? ORDER BY sequence",
-                            (notebook_id,)).fetchall()
+        rows = conn.execute("SELECT * FROM chat_exchanges WHERE notebook_id=? AND (? OR deleted_at IS NULL) ORDER BY sequence",
+                            (notebook_id, include_deleted)).fetchall()
     result = []
     for row in rows:
         item = _row_to_dict(row)
@@ -375,6 +378,54 @@ def list_exchanges(notebook_id: str) -> list[dict[str, Any]]:
 def clear_exchanges(notebook_id: str) -> None:
     with connection() as conn:
         conn.execute("DELETE FROM chat_exchanges WHERE notebook_id=?", (notebook_id,))
+
+
+def deleted_exchange_count(notebook_id: str) -> int:
+    with connection() as conn:
+        return conn.execute("SELECT COUNT(*) FROM chat_exchanges WHERE notebook_id=? AND deleted_at IS NOT NULL",
+                            (notebook_id,)).fetchone()[0]
+
+
+def restore_exchange(notebook_id: str) -> str | None:
+    with connection() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute("""SELECT id FROM chat_exchanges WHERE notebook_id=? AND deleted_at IS NOT NULL
+                              ORDER BY deleted_at DESC, sequence DESC LIMIT 1""", (notebook_id,)).fetchone()
+        if row is None:
+            return None
+        conn.execute("UPDATE chat_exchanges SET deleted_at=NULL WHERE id=? AND notebook_id=?", (row["id"], notebook_id))
+        return row["id"]
+
+
+def delete_exchange(notebook_id: str, exchange_id: str) -> dict[str, Any] | None:
+    with connection() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute("SELECT * FROM chat_exchanges WHERE notebook_id=? AND id=? AND deleted_at IS NULL",
+                           (notebook_id, exchange_id)).fetchone()
+        if row is None:
+            return None
+        if row["status"] == "pending":
+            raise ValueError("这条回答仍在生成，请完成后再删除。")
+        conn.execute("UPDATE chat_exchanges SET deleted_at=? WHERE notebook_id=? AND id=?",
+                     (datetime.now(UTC).isoformat(), notebook_id, exchange_id))
+        expired = conn.execute("""SELECT id, images_json FROM chat_exchanges WHERE notebook_id=? AND deleted_at IS NOT NULL
+                                  ORDER BY deleted_at DESC, sequence DESC LIMIT -1 OFFSET 5""", (notebook_id,)).fetchall()
+        for record in expired:
+            conn.execute("DELETE FROM chat_exchanges WHERE id=? AND notebook_id=?", (record["id"], notebook_id))
+        remaining = {image["id"] for record in conn.execute(
+            "SELECT images_json FROM chat_exchanges WHERE notebook_id=?", (notebook_id,))
+            for image in json.loads(record["images_json"])}
+        removed = []
+        for record in expired:
+            for image in json.loads(record["images_json"]):
+                if image["id"] in remaining:
+                    continue
+                saved = conn.execute("SELECT id, path FROM question_images WHERE id=? AND notebook_id=?",
+                                     (image["id"], notebook_id)).fetchone()
+                if saved:
+                    removed.append(dict(saved))
+                    conn.execute("DELETE FROM question_images WHERE id=? AND notebook_id=?", (image["id"], notebook_id))
+        return {"images": removed}
 
 
 def insert_question_image(image: dict[str, Any]) -> None:
