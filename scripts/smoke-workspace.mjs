@@ -147,8 +147,12 @@ sys.stdout.buffer.write(doc.tobytes())
     await page.locator("#source-search").fill("网络体系结构");
     await page.locator("#source-search-form").evaluate((form) => form.requestSubmit());
     await page.locator(".source-result").first().waitFor();
-    await page.locator(".source-result").filter({ has: page.locator("span") }).first().click();
+    const pdfResult = page.locator(".source-result").filter({ has: page.locator("span") }).first();
+    const expectedPage = (await pdfResult.innerText()).match(/第\s*(\d+)\s*页/)[1];
+    await pdfResult.click();
     await page.locator(".highlight-box").first().waitFor({ timeout: 20000 });
+    assert.equal(await page.locator("#page-input").inputValue(), expectedPage);
+    assert.notEqual(await page.locator("#page-total").innerText(), "/ 0");
     assert(await page.locator("#pdf-canvas").evaluate((canvas) => canvas.width > 0));
     await page.screenshot({ path: path.join(output, "source-search.png"), fullPage: true });
   }

@@ -303,6 +303,9 @@ function resetViewer() {
   state.pdfPageCount = 0;
   state.pdfPage = 1;
   state.highlightLines = [];
+  dom.highlightLayer.replaceChildren();
+  dom.canvas.width = 0;
+  dom.canvas.height = 0;
   dom.viewerEmpty.hidden = false;
   dom.viewerScroll.hidden = true;
   dom.viewerName.textContent = "尚未打开资料";
@@ -350,6 +353,12 @@ async function openPdf(documentId, pageNumber, lines = []) {
 
   try {
     if (state.pdfDocumentId !== documentId || !state.pdfDocument) {
+      state.renderGeneration++;
+      state.renderTask?.cancel();
+      state.renderTask = null;
+      dom.highlightLayer.replaceChildren();
+      dom.canvas.width = 0;
+      dom.canvas.height = 0;
       state.pdfLoadingTask?.destroy().catch(() => {});
       state.pdfDocument = null;
       state.pdfDocumentId = documentId;
