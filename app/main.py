@@ -621,7 +621,7 @@ async def _ask(payload: AskRequest, exchange_id: str) -> dict[str, Any]:
         named_scope = named_question_documents(question, selected_documents) if not references else None
         if named_scope is not None and document_ids:
             if not named_scope:
-                raise HTTPException(status_code=400, detail='你提到的课件不在当前勾选的来源中，请先勾选该课件。')
+                raise HTTPException(status_code=400, detail='你指定的章节或课件无法在当前勾选来源中定位，请勾选对应资料，或使用 L01 等明确名称。')
             selected_documents = named_scope
             document_ids = {doc['id'] for doc in selected_documents}
             document_names = [doc['name'] for doc in selected_documents]
@@ -803,7 +803,7 @@ async def _summary(payload: SummaryRequest, exchange_id: str) -> dict[str, Any]:
     selected = _scope(payload.notebook_id, payload.document_ids)
     selected = summary_documents(payload.focus or "", selected)
     if not selected:
-        raise HTTPException(status_code=400, detail="请先上传资料。")
+        raise HTTPException(status_code=400, detail="未找到可整理的指定章节或来源，请先勾选对应资料，或使用 L01 等明确名称。")
     question = "根据当前选中的来源生成一份复习提纲。"
     if payload.focus:
         question += f"复习重点：{payload.focus}"

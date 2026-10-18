@@ -8,32 +8,70 @@ from typing import Any
 
 ASCII_WORD = re.compile(r"[a-zA-Z0-9_]+")
 CJK_RUN = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]+")
+CHAPTER_NUMBER = r'[0-9零〇一二两三四五六七八九十百]+'
+
+
+def _chapter_number(text: str) -> int:
+    if text.isdigit():
+        return int(text)
+    digits = dict(zip('零〇一二两三四五六七八九', (0, 0, 1, 2, 2, 3, 4, 5, 6, 7, 8, 9)))
+    number, digit = 0, 0
+    for char in text:
+        if char in '十百':
+            number += (digit or 1) * (10 if char == '十' else 100)
+            digit = 0
+        else:
+            digit = digit * 10 + digits[char]
+    return number + digit
+
+
+def _ordinal_documents(question: str, documents: list[dict[str, Any]]) -> list[dict[str, Any]] | None:
+    pattern = rf'第\s*({CHAPTER_NUMBER})\s*(章|讲|节|部分)'
+    requested = {(_chapter_number(number), unit) for number, unit in re.findall(pattern, question)}
+    for first, last, unit in re.findall(rf'第\s*({CHAPTER_NUMBER})\s*(?:章|讲|节)?\s*(?:到|至|[-—~～])\s*第?\s*({CHAPTER_NUMBER})\s*(章|讲|节)', question):
+        start, end = _chapter_number(first), _chapter_number(last)
+        if not 0 < start <= end < 1000:
+            return []
+        requested.update((number, unit) for number in range(start, end + 1))
+    for count, unit in re.findall(rf'前\s*({CHAPTER_NUMBER})\s*(章|讲)', question):
+        number = _chapter_number(count)
+        if not 0 < number < 1000:
+            return []
+        requested.update((n, unit) for n in range(1, number + 1))
+    if not requested:
+        if re.search(r'第\s*[^，。！？\n]{1,8}?(?:章|讲|节|部分)', question):
+            return []
+        return None
+    selected = set()
+    for number, unit in requested:
+        matched = [doc for doc in documents if (number, unit) in {
+            (_chapter_number(value), kind) for value, kind in re.findall(pattern, doc['name'])}]
+        if not matched and unit in {'章', '讲'}:
+            matched = [doc for doc in documents if number in {
+                int(value) for value in re.findall(r'(?<![A-Za-z0-9])[Ll]\s*0*(\d{1,3})(?!\d)', doc['name'])}]
+        if not matched:
+            return []  # An unresolved explicit scope must never mean all selected sources.
+        selected.update(doc['id'] for doc in matched)
+    return [doc for doc in documents if doc['id'] in selected]
 
 
 def summary_documents(question: str, documents: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Resolve named lesson files only within the user's selected sources."""
-    pattern = r"(?<![A-Za-z0-9])([A-Za-z]{1,5})\s*0*(\d{1,3})(?!\d)"
-    codes = {(prefix.casefold(), int(number)) for prefix, number in re.findall(pattern, question)}
-    if codes:
-        return [document for document in documents if codes.intersection(
-            (prefix.casefold(), int(number)) for prefix, number in re.findall(pattern, document["name"]))]
-    matched = []
-    for document in documents:
-        # Course filenames normally use a lesson code, title, and revision suffix.
-        titles = re.findall(r"[\u3400-\u9fff]{3,}", document["name"])
-        if any(title in question for title in titles):
-            matched.append(document)
-    return matched or documents
+    named = named_question_documents(question, documents)
+    return documents if named is None else named
 
 
 def named_question_documents(question: str, documents: list[dict[str, Any]]) -> list[dict[str, Any]] | None:
     """Recognize explicit course filenames without confusing diagram labels with lessons."""
+    ordinal = _ordinal_documents(question, documents)
     pattern = r'(?<![A-Za-z0-9])([A-Za-z]{1,5})\s*0*(\d{1,3})(?!\d)'
     prefixes = {'l'} | {prefix.casefold() for doc in documents for prefix, _ in re.findall(pattern, doc['name'])}
     codes = {(prefix.casefold(), int(number)) for prefix, number in re.findall(pattern, question) if prefix.casefold() in prefixes}
     if codes:
-        return [doc for doc in documents if codes.intersection(
+        return [doc for doc in documents if (ordinal is None or doc in ordinal) and codes.intersection(
             (prefix.casefold(), int(number)) for prefix, number in re.findall(pattern, doc['name']))]
+    if ordinal is not None:
+        return ordinal
     matched = [doc for doc in documents if doc['name'] in question or any(
         title in question for title in re.findall(r'[\u3400-\u9fff]{3,}', doc['name']))]
     return matched or None
