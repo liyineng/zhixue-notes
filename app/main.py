@@ -9,6 +9,7 @@ from contextlib import asynccontextmanager
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
+from typing import Literal
 from uuid import uuid4
 
 from fastapi import FastAPI, File, HTTPException, UploadFile, Query
@@ -19,6 +20,7 @@ from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
 from . import db, generation, cloud_sync
+from .quizzes import build_quiz, save_attempt, COUNTS
 from .previews import presentation_pdf, presentation_page_geometry, PreviewError
 from .conversation import MAX_TURNS, MAX_CONTEXT_CHARS, recent_context, referenced_sources
 from .progress import source_activity
@@ -136,6 +138,21 @@ class SummaryRequest(BaseModel):
     document_ids: list[str] | None = None
     notebook_id: str | None = None
     focus: str = Field(default="", max_length=300)
+
+
+class QuizRequest(BaseModel):
+    request_id: str | None = Field(default=None, max_length=100, pattern=r'^[a-zA-Z0-9_-]+$')
+    notebook_id: str | None = None
+    document_ids: list[str] = Field(default_factory=list)
+    count: Literal['less', 'standard', 'more'] = 'standard'
+    difficulty: Literal['easy', 'medium', 'hard'] = 'medium'
+    language: Literal['zh-CN', 'zh-TW', 'en'] = 'zh-CN'
+    topic: str = Field(default='', max_length=1000)
+
+
+class QuizAnswerRequest(BaseModel):
+    question_id: str = Field(max_length=100)
+    option: int = Field(ge=0, le=3, strict=True)
 
 
 class SettingsRequest(BaseModel):
@@ -965,6 +982,78 @@ async def _summary(payload: SummaryRequest, exchange_id: str) -> dict[str, Any]:
     if not db.finish_pending_exchange(exchange_id, result):
         raise generation.cancelled_error(exchange_id)
     return result
+
+
+@app.post('/api/quiz')
+async def create_quiz(payload: QuizRequest) -> dict[str, Any]:
+    payload = payload.model_copy(update={'notebook_id': payload.notebook_id or 'default'})
+    _notebook(payload.notebook_id)
+    exchange_id = payload.request_id or uuid4().hex
+    return await generation.run(payload.notebook_id, exchange_id, lambda: _quiz(payload, exchange_id))
+
+
+async def _quiz(payload: QuizRequest, exchange_id: str) -> dict[str, Any]:
+    settings = db.get_settings()
+    selected = summary_documents(payload.topic, _scope(payload.notebook_id, payload.document_ids))
+    if not selected:
+        raise HTTPException(status_code=400, detail='请勾选测验来源；指定章节必须包含在勾选来源中。')
+    if not model_configured(settings):
+        raise HTTPException(status_code=400, detail='请先配置模型，再生成交互式测验。')
+    question = f'根据勾选来源生成 {COUNTS[payload.count]} 道交互式测验。'
+    if payload.topic:
+        question += f'主题：{payload.topic}'
+    db.start_exchange(exchange_id, payload.notebook_id, question)
+    try:
+        unread = await _ensure_source_images(selected, settings, exchange_id)
+        contexts = _summary_contexts([d['id'] for d in selected])
+        if not contexts:
+            raise HTTPException(status_code=400, detail='资料尚无可用于出题的文字，请先检查解析或图片识别。')
+        async def on_batch(batch: list[dict], index: int, total: int) -> None:
+            db.set_generation_progress(exchange_id, 'quiz', '生成测验',
+                f"正在依据《{batch[0]['document_name']}》出题，第 {index}/{total} 批，读取本批 {len(batch)} 个片段。",
+                activity=source_activity(batch))
+        quiz = await build_quiz(contexts, settings, count=payload.count, difficulty=payload.difficulty,
+                               language=payload.language, topic=payload.topic, on_batch=on_batch)
+        citations = quiz.pop('citations')
+        warnings = []
+        if len(quiz['questions']) < COUNTS[payload.count]:
+            warnings.append(f"依据可用资料生成了 {len(quiz['questions'])} 题，少于请求的 {COUNTS[payload.count]} 题。")
+        if unread:
+            warnings.extend(f"《{d['document_name']}》第 {', '.join(map(str, d['pages']))} 页图片未识别，未据此出题。" for d in unread)
+        covered = {c['document_id'] for c in citations}
+        warnings.extend(f"《{d['name']}》未出现在本次题目的引用中。" for d in selected if d['id'] not in covered)
+        result = {'chat_id': exchange_id, 'answer': f"已生成 {len(quiz['questions'])} 道测验，选择答案后查看解析。",
+                  'quiz': quiz, 'citations': citations, 'warnings': warnings, 'mode': 'model',
+                  'source_mode': 'knowledge_base', 'intent': 'quiz'}
+    except Exception as exc:
+        detail = _generation_failure(exchange_id, payload.notebook_id, exc)
+        if isinstance(exc, HTTPException):
+            exc.headers = {**(exc.headers or {}), 'X-Chat-Id': exchange_id}
+            raise
+        raise HTTPException(status_code=502, detail=detail, headers={'X-Chat-Id': exchange_id}) from exc
+    if not db.finish_pending_exchange(exchange_id, result):
+        raise generation.cancelled_error(exchange_id)
+    return result
+
+
+@app.post('/api/notebooks/{notebook_id}/quiz/{exchange_id}/answer')
+def answer_quiz(notebook_id: str, exchange_id: str, payload: QuizAnswerRequest) -> dict[str, Any]:
+    _notebook(notebook_id)
+    try:
+        return save_attempt(notebook_id, exchange_id, payload.question_id, payload.option)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post('/api/notebooks/{notebook_id}/quiz/{exchange_id}/reset')
+def reset_quiz(notebook_id: str, exchange_id: str) -> dict[str, Any]:
+    _notebook(notebook_id)
+    try:
+        return save_attempt(notebook_id, exchange_id, reset=True)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @app.post('/api/notebooks/{notebook_id}/chat/{exchange_id}/cancel')

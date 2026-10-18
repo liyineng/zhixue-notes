@@ -46,6 +46,28 @@ class CloudSyncTests(unittest.TestCase):
             with self.device(name):
                 sync.sync()
 
+    def test_quiz_attempts_sync_without_a_new_database_schema(self):
+        from app.quizzes import save_attempt
+        with self.device('a'):
+            db.start_exchange('quiz-test', 'default', '交互测验')
+            db.finish_exchange('quiz-test', {'answer': '测验', 'citations': [], 'quiz': {
+                'questions': [{'id': 'q1', 'answer': 0}], 'answers': {}, 'attempt': 1}})
+            sync.sync()
+        with self.device('b'):
+            sync.sync()
+            save_attempt('default', 'quiz-test', 'q1', 2)
+            sync.sync()
+        self.converge()
+        with self.device('a'):
+            self.assertEqual(db.get_exchange('default', 'quiz-test')['result']['quiz']['answers'], {'q1': 2})
+            save_attempt('default', 'quiz-test', reset=True)
+            sync.sync()
+        self.converge()
+        with self.device('b'):
+            quiz = db.get_exchange('default', 'quiz-test')['result']['quiz']
+            self.assertEqual(quiz['answers'], {})
+            self.assertEqual(quiz['attempt'], 2)
+
     def test_independent_offline_changes_merge_and_never_export_settings(self):
         for name in ('a', 'b'):
             with self.device(name):

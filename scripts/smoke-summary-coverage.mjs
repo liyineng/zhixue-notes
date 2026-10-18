@@ -49,6 +49,7 @@ db.finish_pending_exchange(d['result']['chat_id'],d['result'])
     await route.fulfill({ json: result });
   });
   await page.locator('#summary-button').click();
+  await page.locator('#feature-generate').click();
   await page.locator('.summary-coverage').waitFor();
   assert.match(await page.locator('.summary-coverage').innerText(), /读取范围：2\/3/);
   assert.match(await page.locator('.summary-coverage').innerText(), /回答引用 1 份/);

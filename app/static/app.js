@@ -1,6 +1,7 @@
 import { renderAnswerHtml, matchingSourceLines } from "/static/answer-format.js";
 import { initializeCloudSync } from '/static/cloud-sync.js';
 import { presentationHighlights } from '/static/presentation-highlights.js';
+import { renderQuiz } from '/static/quizzes.js';
 import renderMathInElement from '/static/vendor/katex/contrib/auto-render.mjs';
 import * as pdfjsLib from "/static/vendor/pdfjs/pdf.mjs";
 
@@ -1232,9 +1233,10 @@ async function saveSettings(event) {
   }
 }
 
-async function generateSummary() {
+async function generateSummary(configuration = {}) {
   if (state.busy) return;
-  if (!selectedIds().length) {
+  const sources = configuration.document_ids || selectedIds();
+  if (!sources.length) {
     showToast("请先上传至少一份资料。", true);
     return;
   }
@@ -1248,7 +1250,7 @@ async function generateSummary() {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       signal: job.controller.signal,
-      body: JSON.stringify({ notebook_id: state.notebookId, document_ids: selectedIds(), request_id: job.id }),
+      body: JSON.stringify({ notebook_id: state.notebookId, document_ids: sources, request_id: job.id, focus: configuration.topic || '' }),
     });
     updateAssistantMessage(assistantId, data.answer, data.citations, data.mode, data.source_mode, { coverage: data.summary_coverage });
     bindExchange(assistantId, userId, data.chat_id);
@@ -1262,6 +1264,108 @@ async function generateSummary() {
     finishGeneration(job);
   }
 }
+
+function showQuiz(messageId, result) {
+  updateAssistantMessage(messageId, result.answer, result.citations, result.mode, result.source_mode);
+  const article = dom.messages.querySelector(`[data-message-id="${messageId}"]`);
+  article.querySelectorAll('.save-answer, .quote-answer').forEach(button => button.remove());
+  const notebook = state.notebookId;
+  const endpoint = `/api/notebooks/${encodeURIComponent(notebook)}/quiz/${encodeURIComponent(result.chat_id)}`;
+  renderQuiz(article.querySelector('.message-body'), result, {
+    colorCitation,
+    onAnswer: (question_id, option) => api(`${endpoint}/answer`, jsonOptions('POST', { question_id, option })),
+    onReset: () => api(`${endpoint}/reset`, { method: 'POST' }),
+    onCitation: index => {
+      const reference = result.citations.find(c => c.index === index);
+      if (reference) showCitation(reference, messageId, index);
+    },
+  });
+}
+
+async function generateQuiz(configuration) {
+  if (state.busy) return;
+  const question = `根据勾选来源生成 ${ {less:5, standard:10, more:15}[configuration.count] } 道交互式测验。${configuration.topic ? `主题：${configuration.topic}` : ''}`;
+  const userId = addMessage('user', question);
+  const assistantId = addMessage('assistant', '', { loading: true });
+  const job = startGeneration(question, assistantId);
+  setBusy(true);
+  try {
+    const result = await api('/api/quiz', { ...jsonOptions('POST', { ...configuration, notebook_id: state.notebookId, request_id: job.id }), signal: job.controller.signal });
+    showQuiz(assistantId, result);
+    bindExchange(assistantId, userId, result.chat_id);
+  } catch (error) {
+    if (job.cancelled || error.cancelled) setAssistantCancelled(assistantId);
+    else { setAssistantError(assistantId, error); showToast(error.message, true); }
+    bindExchange(assistantId, userId, error.chatId || (job.cancelled ? job.id : null));
+  } finally { finishGeneration(job); }
+}
+
+const featuresDialog = document.getElementById('features-dialog');
+let featureKind = 'summary';
+const featureTopic = document.getElementById('feature-topic');
+function saveFeatureDraft() {
+  localStorage.setItem(`zhixue-features:${state.notebookId}`, JSON.stringify({ kind: featureKind, topic: featureTopic.value,
+    document_ids: [...document.querySelectorAll('#feature-source-list input:checked')].map(input => input.value),
+    count: document.getElementById('quiz-count').value, difficulty: document.getElementById('quiz-difficulty').value,
+    language: document.getElementById('quiz-language').value }));
+}
+document.getElementById('features-form').addEventListener('input', saveFeatureDraft);
+document.getElementById('features-form').addEventListener('change', saveFeatureDraft);
+function chooseFeature(kind) {
+  featureKind = kind;
+  document.querySelectorAll('[data-feature]').forEach(button => {
+    button.classList.toggle('active', button.dataset.feature === kind);
+    button.setAttribute('aria-pressed', String(button.dataset.feature === kind));
+  });
+  document.getElementById('quiz-settings').hidden = kind !== 'quiz';
+  document.getElementById('feature-topic-label').textContent = kind === 'quiz' ? '主题应该是什么？（选填）' : '复习重点（选填）';
+  featureTopic.maxLength = kind === 'quiz' ? 1000 : 300;
+  featureTopic.placeholder = kind === 'quiz' ? '例如：第二章，并联谐振回路的公式及适用条件' : '例如：整理第二章的主要概念和公式';
+  document.getElementById('feature-generate').textContent = kind === 'quiz' ? '生成测验' : '生成提纲';
+}
+document.querySelectorAll('[data-feature]').forEach(button => button.addEventListener('click', () => { chooseFeature(button.dataset.feature); saveFeatureDraft(); }));
+document.getElementById('close-features').addEventListener('click', () => featuresDialog.close());
+function openFeatures() {
+  if (state.busy) return;
+  let draft = {};
+  try { draft = JSON.parse(localStorage.getItem(`zhixue-features:${state.notebookId}`)) || {}; } catch { /* Ignore invalid local drafts. */ }
+  chooseFeature(draft.kind === 'quiz' ? 'quiz' : 'summary');
+  featureTopic.value = typeof draft.topic === 'string' ? draft.topic.slice(0, featureTopic.maxLength) : '';
+  for (const [id, value] of [['quiz-count', draft.count], ['quiz-difficulty', draft.difficulty], ['quiz-language', draft.language]]) {
+    const select = document.getElementById(id);
+    if ([...select.options].some(option => option.value === value)) select.value = value;
+  }
+  const list = document.getElementById('feature-source-list'); list.replaceChildren();
+  for (const documentSource of state.documents) {
+    const label = document.createElement('label'); label.className = 'feature-source-row';
+    const checkbox = document.createElement('input'); checkbox.type = 'checkbox'; checkbox.value = documentSource.id;
+    checkbox.checked = Array.isArray(draft.document_ids) ? draft.document_ids.includes(documentSource.id) : state.selectedSources.has(documentSource.id);
+    const name = document.createElement('span'); name.textContent = documentSource.name;
+    label.append(checkbox, name); list.append(label);
+  }
+  const updateCount = () => {
+    const count = list.querySelectorAll('input:checked').length;
+    document.getElementById('feature-source-count').textContent = `来源 · 已选择 ${count} / ${state.documents.length} 个`;
+  };
+  list.onchange = updateCount; updateCount();
+  if (!state.documents.length) list.textContent = '请先在左侧上传课程资料。';
+  document.getElementById('feature-error').hidden = true;
+  featuresDialog.showModal();
+}
+document.getElementById('features-form').addEventListener('submit', event => {
+  event.preventDefault();
+  const document_ids = [...document.querySelectorAll('#feature-source-list input:checked')].map(input => input.value);
+  const error = document.getElementById('feature-error');
+  if (!document_ids.length) { error.textContent = '请至少勾选一个来源。'; error.hidden = false; return; }
+  if (featureKind === 'quiz' && !state.settings?.model_configured) { error.textContent = '请先在模型设置中配置模型。'; error.hidden = false; return; }
+  if (featureTopic.value.length > featureTopic.maxLength) { error.textContent = `主题最多 ${featureTopic.maxLength} 字，请缩短后生成。`; error.hidden = false; return; }
+  const configuration = { document_ids, topic: featureTopic.value.trim(), count: document.getElementById('quiz-count').value,
+    difficulty: document.getElementById('quiz-difficulty').value, language: document.getElementById('quiz-language').value };
+  saveFeatureDraft();
+  featuresDialog.close();
+  if (featureKind === 'quiz') generateQuiz(configuration);
+  else generateSummary(configuration);
+});
 
 dom.uploadButton.addEventListener("click", () => dom.fileInput.click());
 dom.dropzone.addEventListener("click", () => dom.fileInput.click());
@@ -1344,7 +1448,7 @@ dom.settingsButton.addEventListener("click", async () => {
 dom.closeSettings.addEventListener("click", () => dom.settingsDialog.close());
 dom.cancelSettings.addEventListener("click", () => dom.settingsDialog.close());
 dom.settingsForm.addEventListener("submit", saveSettings);
-dom.summaryButton.addEventListener("click", generateSummary);
+dom.summaryButton.addEventListener("click", openFeatures);
 
 dom.prevPage.addEventListener("click", () => renderPdfPage(state.pdfPage - 1));
 dom.nextPage.addEventListener("click", () => renderPdfPage(state.pdfPage + 1));
@@ -1438,7 +1542,8 @@ async function loadChat(polling = false) {
     const id = exchange.id;
     if (exchange.status === "complete") {
       const result = exchange.result;
-      updateAssistantMessage(id, result.answer, result.citations, result.mode, result.source_mode, { question: exchange.question, coverage: result.summary_coverage });
+      if (result.quiz) showQuiz(id, { ...result, chat_id: exchange.id });
+      else updateAssistantMessage(id, result.answer, result.citations, result.mode, result.source_mode, { question: exchange.question, coverage: result.summary_coverage });
       const user = dom.messages.querySelector(`[data-message-id="user-${exchange.id}"]`);
       if (result.image_question_text && !user.querySelector('.image-recognition')) addRecognizedText(user, result.image_question_text, result.image_recognition_mode);
     } else if (exchange.status === "error") {
