@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
 from . import db, generation
-from .conversation import MAX_TURNS, recent_context
+from .conversation import MAX_TURNS, MAX_CONTEXT_CHARS, recent_context, referenced_sources
 from .progress import source_activity
 from .config import (
     MAX_UPLOAD_BYTES,
@@ -572,6 +572,7 @@ async def _ask(payload: AskRequest, exchange_id: str) -> dict[str, Any]:
         images.append(image)
     document_ids = {doc["id"] for doc in selected_documents}
     reply_to = {}
+    parent = None
     if payload.reply_to_id:
         parent = db.get_exchange(payload.notebook_id, payload.reply_to_id)
         if not parent or parent['status'] != 'complete' or not parent['result'].get('answer'):
@@ -583,7 +584,12 @@ async def _ask(payload: AskRequest, exchange_id: str) -> dict[str, Any]:
 
     document_names = [document["name"] for document in selected_documents]
     question = payload.question.strip() or "请解答图片中的题目，并结合选中的课程资料。"
-    history, context_turns = recent_context(db.recent_completed_exchanges(payload.notebook_id, MAX_TURNS)) if not reply_to else ('', 0)
+    previous_exchanges = [parent] if parent else db.recent_completed_exchanges(payload.notebook_id, MAX_TURNS)
+    references = referenced_sources(question, previous_exchanges, document_ids)
+    reference_hint = '\n'.join(f"历史引用 {c['index']} → 《{c['document_name'][:150]}》" +
+                               (f"第 {c['page']} 页" if c.get('page') else '对应文字片段') for c in references)
+    history, context_turns = recent_context(previous_exchanges) if not reply_to else ('', 0)
+    history = history[:max(0, MAX_CONTEXT_CHARS - len(reference_hint))]
     db.start_exchange(exchange_id, payload.notebook_id or "default", question, [_public_image(image) for image in images], reply_to)
 
     try:
@@ -603,13 +609,15 @@ async def _ask(payload: AskRequest, exchange_id: str) -> dict[str, Any]:
                                   f"原回答：\n{previous}\n\n请针对本次追问解释；资料依据必须重新从本次提供的资料片段中取得。")
         if image_text:
             effective_question += "\n\n题目图片的识别内容（不确定处请指出，不要猜测缺失条件）：\n" + image_text
+        if reference_hint:
+            effective_question += '\n\n用户所指的历史引用定位（编号不是页码，本次依据会重新读取原文）：\n' + reference_hint
         db.set_generation_progress(exchange_id, 'analysis', '规划检索', '正在判断是否需要资料，并提炼检索关键词。')
         analysis = await analyze_question(
             effective_question,
             document_names,
             settings,
         )
-        if (images or reply_to) and document_ids:
+        if (images or reply_to or references) and document_ids:
             analysis["needs_retrieval"] = True
         if analysis["intent"] == "summary":
             analysis["needs_retrieval"] = True
@@ -625,6 +633,17 @@ async def _ask(payload: AskRequest, exchange_id: str) -> dict[str, Any]:
                 unread = await _ensure_source_images(selected_documents, settings, exchange_id)
                 db.set_generation_progress(exchange_id, 'retrieval', '读取课件内容', f'正在整理 {len(selected_documents)} 份课件的完整页面。')
                 contexts = _summary_contexts([document["id"] for document in selected_documents])
+            elif references:
+                referenced_documents = [doc for doc in selected_documents if doc['id'] in {c['document_id'] for c in references}]
+                unread = await _ensure_source_images(referenced_documents, settings, exchange_id)
+                pages = {(c['document_id'], c['page']) for c in references if c.get('page') is not None}
+                chunk_ids = {c['chunk_id'] for c in references if c.get('page') is None}
+                contexts = [c for c in _summary_contexts([doc['id'] for doc in referenced_documents])
+                            if (c['document_id'], c.get('page')) in pages or c['chunk_id'] in chunk_ids]
+                contexts = [{**c, 'index': index} for index, c in enumerate(contexts, 1)]
+                db.set_generation_progress(exchange_id, 'retrieval', '读取所指原文',
+                                           '已将历史引用编号定位到真实页面，正在读取对应题干与资料。',
+                                           activity=source_activity(contexts))
             else:
                 unread = await _ensure_source_images(selected_documents, settings, exchange_id)
                 combined_query = " ".join(dict.fromkeys([analysis["search_query"], *analysis["keywords"]]))

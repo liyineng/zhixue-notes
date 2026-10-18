@@ -3,7 +3,8 @@ from unittest.mock import AsyncMock, patch
 
 import test_workspace
 from app import db, main
-from app.conversation import MAX_CONTEXT_CHARS, recent_context
+from app.conversation import MAX_CONTEXT_CHARS, recent_context, referenced_sources
+import pymupdf
 
 
 class ConversationTests(unittest.TestCase):
@@ -66,3 +67,47 @@ class ConversationTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(answer.call_args.args[0], '你好')
         self.assertEqual(response.json()['context_turns'], 0)
+
+    def test_citation_numbers_load_real_pages_even_if_planner_confuses_them(self):
+        notebook = self.notebook('引用中的习题')
+        with pymupdf.open() as pdf:
+            for number in range(1, 51):
+                page = pdf.new_page()
+                text = 'CRC received 110111001 divisor 11001 remainder 10.' if number == 28 else 'Moon link 1Mbps delay 1.25s frame 1KB.' if number == 50 else f'Other page {number}.'
+                page.insert_text((30, 40), text)
+            content = pdf.tobytes()
+        response = self.client.post('/api/documents', params={'notebook_id': notebook},
+            files={'file': ('L04.pdf', content, 'application/pdf')})
+        self.assertEqual(response.status_code, 200, response.text)
+        document = response.json()['document']['id']
+        sources = [{**c, 'index': 22 if c['page'] == 28 else 42}
+                   for c in main._summary_contexts([document]) if c['page'] in (28, 50)]
+        db.start_exchange('reference-parent', notebook, '整理 L04')
+        db.finish_exchange('reference-parent', {'answer': 'CRC[22]，月球链路[42]', 'citations': sources})
+        planner = AsyncMock(return_value={'intent': 'question', 'needs_retrieval': False,
+                                         'search_query': '第22页 第42页', 'keywords': []})
+        async def answer(question, contexts, *args):
+            self.assertIn('历史引用 22 → 《L04.pdf》第 28 页', question)
+            self.assertEqual([c['page'] for c in contexts], [28, 50])
+            self.assertIn('110111001', contexts[0]['text'])
+            self.assertIn('1.25s', contexts[1]['text'])
+            self.assertEqual([c['index'] for c in contexts], [1, 2])
+            return 'CRC 有差错 [1]，月球链路需计算窗口 [2]。'
+        with patch.object(main, 'analyze_question', planner), patch.object(main, 'answer_question', side_effect=answer):
+            result = self.client.post('/api/ask', json={'notebook_id': notebook, 'document_ids': [document],
+                'question': '这里22和42对应的题帮我做一下', 'top_k': 1})
+        self.assertEqual(result.status_code, 200, result.text)
+        self.assertEqual([c['page'] for c in result.json()['citations']], [28, 50])
+        # Explicit quoting uses the selected answer's numbering even after a newer answer exists.
+        with patch.object(main, 'analyze_question', planner), patch.object(main, 'answer_question', side_effect=answer):
+            result = self.client.post('/api/ask', json={'notebook_id': notebook, 'document_ids': [document],
+                'question': '引用22和42的题', 'reply_to_id': 'reference-parent'})
+        self.assertEqual(result.status_code, 200, result.text)
+
+    def test_reference_resolution_respects_selection_nearest_turn_and_page_wording(self):
+        older = {'result': {'citations': [{'index': 22, 'document_id': 'allowed', 'page': 28}]}}
+        latest = {'result': {'citations': [{'index': 22, 'document_id': 'excluded', 'page': 5}]}}
+        self.assertEqual(referenced_sources('引用22', [older, latest], {'allowed'}), [])
+        self.assertEqual(referenced_sources('这里22', [older], set()), [])
+        self.assertEqual(referenced_sources('第22页的题', [older], {'allowed'}), [])
+        self.assertEqual(referenced_sources('引用22的题', [older], {'allowed'})[0]['page'], 28)
