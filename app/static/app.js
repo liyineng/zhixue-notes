@@ -555,22 +555,22 @@ async function renderPdfPage(pageNumber) {
   state.renderTask = null;
   if (state.previewCitations.length) {
     const documentId = state.pdfDocumentId;
-    let pageLines = state.previewPageLines.get(safePage);
+    let geometry = state.previewPageLines.get(safePage);
     let locationError = false;
-    if (!pageLines) {
+    if (!geometry) {
       try {
         const data = await api(`/api/documents/${documentId}/preview-lines?page=${safePage}`);
         if (generation !== state.renderGeneration || documentId !== state.pdfDocumentId) return;
-        pageLines = data.lines;
-        state.previewPageLines.set(safePage, pageLines);
+        geometry = data;
+        state.previewPageLines.set(safePage, geometry);
       } catch (_) {
         if (generation !== state.renderGeneration) return;
-        pageLines = [];
+        geometry = { lines: [] };
         locationError = true;
       }
     }
     const references = state.previewCitations.filter(ref => Number(ref.page) === safePage);
-    drawHighlights(viewport, presentationHighlights(references, pageLines, safePage), references, locationError);
+    drawHighlights(viewport, presentationHighlights(references, geometry.lines, safePage, geometry.formula_regions), references, locationError);
   } else drawHighlights(viewport);
 }
 
@@ -597,6 +597,7 @@ function drawHighlights(viewport, mappedLines = null, pageReferences = null, loc
     const index = active ? state.activeCitation : indices[0];
     colorCitation(box, index);
     box.dataset.citations = indices.join(",");
+    if (line.formula) box.dataset.formula = 'true';
     box.classList.toggle("active-highlight", active);
     if (indices.length > 1) box.style.background = `linear-gradient(90deg, ${indices.map((n) => citationTone(n)[1]).join(",")})`;
     box.style.left = `${Math.min(x1, x2)}px`;

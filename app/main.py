@@ -18,7 +18,7 @@ from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
 from . import db, generation, cloud_sync
-from .previews import presentation_pdf, presentation_page_lines, PreviewError
+from .previews import presentation_pdf, presentation_page_geometry, PreviewError
 from .conversation import MAX_TURNS, MAX_CONTEXT_CHARS, recent_context, referenced_sources
 from .progress import source_activity
 from .summaries import summary_batches
@@ -500,7 +500,7 @@ def document_preview_lines(document_id: str, page: int = Query(ge=1)) -> dict[st
     if page > document['page_count']:
         raise HTTPException(status_code=400, detail='课件页码超出范围。')
     try:
-        return {'lines': presentation_page_lines(document, page)}
+        return presentation_page_geometry(document, page)
     except PreviewError as error:
         raise HTTPException(status_code=503, detail=str(error)) from error
 

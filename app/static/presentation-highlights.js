@@ -2,7 +2,7 @@
 const normalized = value => String(value || '').normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}]/gu, '');
 const substantial = value => /[\u3400-\u9fff]/u.test(value) ? value.length >= 4 : value.length >= 8;
 
-export function presentationHighlights(references, pageLines, pageNumber) {
+export function presentationHighlights(references, pageLines, pageNumber, formulaRegions = []) {
   const lines = pageLines.filter(line => Number(line.page) === Number(pageNumber) && Array.isArray(line.bbox));
   const fragments = lines.map(line => normalized(line.text));
   const page = fragments.join('');
@@ -36,6 +36,13 @@ export function presentationHighlights(references, pageLines, pageNumber) {
     for (let i = 0; i < lines.length; i++) {
       if (fragments[i] && spans.some(([start, end]) => offsets[i] < end && offsets[i] + fragments[i].length > start)) {
         output.push({ ...lines[i], citationIndex: Number(citation.index) });
+      }
+    }
+    for (const region of formulaRegions) {
+      if (region.kind !== 'equation-object' || Number(region.page) !== Number(pageNumber) || !Array.isArray(region.bbox)) continue;
+      const anchors = (region.anchor_texts || []).map(normalized).filter(substantial);
+      if (anchors.some(anchor => quote.includes(anchor))) {
+        output.push({ page: Number(pageNumber), bbox: region.bbox, citationIndex: Number(citation.index), formula: true });
       }
     }
   }

@@ -15,7 +15,7 @@
 
 请下载上面对应系统的 ZIP。GitHub 自动附带的 **Source code** 是源码归档，不是发行程序包；新版本的源码归档也已排除选题说明和开发用说明/测试目录，个人课程文件保留在本机。旧版本的 Source code 是其历史提交快照。
 
-PPTX 原页预览需要安装 [LibreOffice](https://www.libreoffice.org/download/download-libreoffice/)，程序自动检测 Mac 默认安装目录或 Windows 的 `Program Files/LibreOffice/program`，也支持 PATH 中的 `soffice`。首次打开在本机转换为 PDF，校验页数并缓存，之后可翻页和按引用跳到对应幻灯片；原课件和已有索引不变。PPT 引用会按保存的原文匹配转换后页面的文字位置，显示与回答一致的颜色、编号和高亮；同页重叠引用保留多个编号。未匹配到位置时明确提示，不用整页框冒充精确标注。已有问答无需重新生成。未安装或转换失败时显示原因，仍可看提取文字及下载原文件。默认本机 OCR 另需 Tesseract 中文/英文语言包，也可配置视觉模型。
+PPTX 原页预览需要安装 [LibreOffice](https://www.libreoffice.org/download/download-libreoffice/)，程序自动检测 Mac 默认安装目录或 Windows 的 `Program Files/LibreOffice/program`，也支持 PATH 中的 `soffice`。首次打开在本机转换为 PDF，校验页数并缓存，之后可翻页和按引用跳到对应幻灯片；原课件和已有索引不变。PPT 引用会按保存的原文匹配转换后页面的文字位置，显示与回答一致的颜色、编号和高亮；同页重叠引用保留多个编号。紧邻引用文字、可确认为 Equation/MathType 对象的行内公式按完整对象边界标注，包含分式和下标；普通图片、电路图和小序号不按公式推断。未匹配到位置时明确提示，不用整页框冒充精确标注。已有问答无需重新生成。未安装或转换失败时显示原因，仍可看提取文字及下载原文件。默认本机 OCR 另需 Tesseract 中文/英文语言包，也可配置视觉模型。
 
 模型可插拔的课程资料学习助手。第一版已经可以本机运行，完成以下闭环：
 

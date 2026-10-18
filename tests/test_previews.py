@@ -104,3 +104,23 @@ class PresentationPreviewTests(unittest.TestCase):
             env = previews.conversion_environment(self.root)
             self.assertEqual(Path(env['FONTCONFIG_FILE']), self.root / 'fonts.conf')
             self.assertEqual(xml.parse(env['FONTCONFIG_FILE']).getroot().tag, 'fontconfig')
+
+    def test_inline_equation_uses_object_bounds_and_nearby_text_without_diagrams(self):
+        from pptx.util import Inches
+        deck = Presentation()
+        deck.slide_width, deck.slide_height = Inches(10), Inches(5.625)
+        slide = deck.slides.add_slide(deck.slide_layouts[6])
+        slide.shapes.add_textbox(Inches(1), Inches(2.5), Inches(2), Inches(.35)).text = '因为有载'
+        slide.shapes.add_ole_object(io.BytesIO(b'fixture-equation'), 'Equation.3', Inches(3.02), Inches(2.4), Inches(1), Inches(.6))
+        slide.shapes.add_textbox(Inches(4.05), Inches(2.5), Inches(2), Inches(.35)).text = '所以品质因数不能太低'
+        slide.shapes.add_ole_object(io.BytesIO(b'fixture-diagram'), 'Word.Picture.8', Inches(3.02), Inches(2.4), Inches(1), Inches(.6))
+        slide.shapes.add_ole_object(io.BytesIO(b'unrelated-equation'), 'Equation.3', Inches(7), Inches(.2), Inches(1), Inches(.6))
+        slide.shapes.add_ole_object(io.BytesIO(b'list-number'), 'Equation.3', Inches(.7), Inches(2.5), Inches(.25), Inches(.25))
+        path = self.root / 'formula.pptx'
+        deck.save(path)
+        regions = previews.presentation_formula_regions({'path': str(path)}, 1, 960, 540)
+        self.assertEqual(len(regions), 1)
+        self.assertEqual(regions[0]['anchor_texts'], ['因为有载', '所以品质因数不能太低'])
+        self.assertEqual(regions[0]['kind'], 'equation-object')
+        self.assertAlmostEqual(regions[0]['bbox'][0], 3.02 * 96, places=2)
+        self.assertAlmostEqual(regions[0]['bbox'][3], 3 * 96, places=2)

@@ -105,7 +105,45 @@ def presentation_pdf(document: dict) -> Path:
     return target
 
 
-def presentation_page_lines(document: dict, page_number: int) -> list[dict]:
+def presentation_formula_regions(document: dict, page_number: int, width: float, height: float) -> list[dict]:
+    from pptx import Presentation
+    from pptx.enum.shapes import MSO_SHAPE_TYPE
+    deck = Presentation(document['path'])
+    scale_x, scale_y = width / deck.slide_width, height / deck.slide_height
+    shapes = list(deck.slides[page_number - 1].shapes)
+    def bounds(shape):
+        return [shape.left * scale_x, shape.top * scale_y,
+                (shape.left + shape.width) * scale_x, (shape.top + shape.height) * scale_y]
+    text_shapes = [(bounds(shape), shape.text.strip()) for shape in shapes
+                   if getattr(shape, 'has_text_frame', False) and shape.text.strip()]
+    regions = []
+    for shape in shapes:
+        if shape.shape_type != MSO_SHAPE_TYPE.EMBEDDED_OLE_OBJECT:
+            continue
+        # Circuit diagrams and generic pictures must not be guessed as equations.
+        program = (shape.ole_format.prog_id or '').lower()
+        if not program.startswith(('equation.', 'mathtype')):
+            continue
+        box = bounds(shape)
+        if box[2] - box[0] > width * .4 or box[3] - box[1] > height * .18:
+            continue
+        anchors = []
+        anchor_heights = []
+        for text_box, text in text_shapes:
+            overlap = min(box[3], text_box[3]) - max(box[1], text_box[1])
+            gap = max(box[0] - text_box[2], text_box[0] - box[2], 0)
+            if overlap >= .4 * min(box[3] - box[1], text_box[3] - text_box[1]) and gap <= 14:
+                anchors.append(text)
+                anchor_heights.append(text_box[3] - text_box[1])
+        # Equation editors are also used to draw circled list numbers. Exclude
+        # small single-glyph objects rather than presenting them as formulas.
+        small_label = anchor_heights and box[2] - box[0] < 1.2 * min(anchor_heights) and box[3] - box[1] < 1.15 * min(anchor_heights)
+        if anchors and not small_label:
+            regions.append({'page': page_number, 'bbox': box, 'anchor_texts': anchors, 'kind': 'equation-object'})
+    return regions
+
+
+def presentation_page_geometry(document: dict, page_number: int) -> dict:
     path = presentation_pdf(document)
     with pymupdf.open(path) as pdf:
         if not 1 <= page_number <= pdf.page_count:
@@ -118,4 +156,9 @@ def presentation_page_lines(document: dict, page_number: int) -> list[dict]:
                 text = ''.join(span.get('text', '') for span in line.get('spans', []))
                 if text.strip():
                     lines.append({'page': page_number, 'text': text, 'bbox': list(line['bbox'])})
-        return lines
+        rect = pdf[page_number - 1].rect
+        return {'lines': lines, 'formula_regions': presentation_formula_regions(document, page_number, rect.width, rect.height)}
+
+
+def presentation_page_lines(document: dict, page_number: int) -> list[dict]:
+    return presentation_page_geometry(document, page_number)['lines']
