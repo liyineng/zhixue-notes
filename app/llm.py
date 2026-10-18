@@ -142,7 +142,7 @@ async def select_evidence(question: str, candidates: list[dict[str, Any]],
     return selected
 
 
-def cited_sources(answer: str, contexts: list[dict[str, Any]]) -> tuple[str, list[dict[str, Any]]]:
+def cited_sources(answer: str, contexts: list[dict[str, Any]], *, renumber: bool = True) -> tuple[str, list[dict[str, Any]]]:
     """Return only sources actually cited, with matching contiguous reference numbers."""
     parts = re.split(r"(```[\s\S]*?```|~~~[\s\S]*?~~~|`+[^`]*`+|\\\([\s\S]*?\\\)|\\\[[\s\S]*?\\\]|\$\$[\s\S]*?\$\$|\$[^$\n]+\$)", answer)
     parts = [re.sub(r'【(\d+)】', r'[\1]', part) if i % 2 == 0 else part for i, part in enumerate(parts)]
@@ -151,6 +151,8 @@ def cited_sources(answer: str, contexts: list[dict[str, Any]]) -> tuple[str, lis
     if used - allowed:
         raise RuntimeError("模型使用了不存在的资料引用编号，请重新生成回答。")
     sources = [c for c in contexts if c["index"] in used]
+    if not renumber:
+        return ''.join(parts), sources
     numbers = {c["index"]: i for i, c in enumerate(sources, 1)}
     answer = "".join(re.sub(r"\[(\d+)\]", lambda m: f"[{numbers[int(m[1])]}]", part)
                      if i % 2 == 0 else part for i, part in enumerate(parts))

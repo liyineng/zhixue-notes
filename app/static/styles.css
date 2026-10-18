@@ -916,6 +916,9 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .unavailable-reference { color: var(--muted); font-size: .85em; }
 .answer-math, .message-body .katex-display { max-width: 100%; overflow-x: auto; overflow-y: hidden; }
 .message-body .katex { font-size: 1.05em; }
+.summary-source-coverage { margin: 8px 0 12px; color: var(--muted); font-size: 12px; }
+.summary-source-coverage summary { cursor: pointer; }
+.message-body .summary-source-coverage p { margin: 7px 0; }
 
 .loading-dots::after {
   content: "";

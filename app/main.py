@@ -18,6 +18,7 @@ from starlette.concurrency import run_in_threadpool
 from . import db, generation
 from .conversation import MAX_TURNS, MAX_CONTEXT_CHARS, recent_context, referenced_sources
 from .progress import source_activity
+from .summaries import summary_batches
 from .config import (
     MAX_UPLOAD_BYTES,
     STATIC_DIR,
@@ -692,7 +693,7 @@ async def _ask(payload: AskRequest, exchange_id: str) -> dict[str, Any]:
                                                activity=source_activity(candidates, retrieval_query))
                     contexts = await select_evidence(effective_question, candidates, settings, top_k)
         retrieval_hits = len(contexts)
-        coverage = summary_coverage(contexts) if analysis["intent"] == "summary" else None
+        coverage = _summary_scope(contexts, selected_documents) if analysis["intent"] == "summary" else None
         if coverage is not None:
             coverage['unread_image_pages'] = unread
         if unread:
@@ -701,11 +702,13 @@ async def _ask(payload: AskRequest, exchange_id: str) -> dict[str, Any]:
                                    f'已选出 {len(contexts)} 处依据，正在结合下列资料组织回答。' if contexts else '正在生成回答；本次没有可引用的资料依据。',
                                    activity=source_activity(contexts))
         if analysis["intent"] == "summary":
-            answer = await make_summary(contexts, settings, question=effective_question)
+            answer = await _generate_summary(contexts, settings, effective_question, exchange_id, selected_documents)
         else:
             answer = await answer_question(effective_question, contexts, settings,
                                            document_names, analysis["needs_retrieval"])
         answer, contexts = cited_sources(answer, contexts)
+        if coverage is not None:
+            coverage.update(summary_coverage_data(coverage, contexts))
     except Exception as exc:
         db.finish_pending_exchange(exchange_id, {"detail": str(exc)}, error=True)
         if isinstance(exc, HTTPException):
@@ -740,6 +743,53 @@ def summary_coverage(contexts: list[dict[str, Any]]) -> dict[str, Any]:
             "sources": len(contexts)}
 
 
+def summary_coverage_data(coverage: dict[str, Any], citations: list[dict[str, Any]]) -> dict[str, Any]:
+    sources = coverage.get('selected_sources', [{'name': name} for name in coverage['documents']])
+    return {'cited_documents': list(dict.fromkeys(c['document_name'] for c in citations)),
+            'cited_document_ids': list(dict.fromkeys(c['document_id'] for c in citations)),
+            'document_details': [{**source,
+                                  'read_pages': coverage.get('pages_by_document', {}).get(source.get('id')),
+                                  'read_sources': coverage.get('sources_by_document', {}).get(source.get('id')),
+                                  'cited_pages': len({c.get('page') for c in citations if c['document_id'] == source.get('id') and c.get('page') is not None}),
+                                  'citations': sum(c['document_id'] == source.get('id') for c in citations)} for source in sources]}
+
+
+def _summary_scope(contexts: list[dict[str, Any]], documents: list[dict[str, Any]]) -> dict[str, Any]:
+    coverage = summary_coverage(contexts)
+    coverage['selected_documents'] = [doc['name'] for doc in documents]
+    coverage['selected_sources'] = [{'id': doc['id'], 'name': doc['name']} for doc in documents]
+    coverage['read_document_ids'] = list(dict.fromkeys(c['document_id'] for c in contexts))
+    coverage['pages_by_document'] = {doc['id']: len({c['page'] for c in contexts if c['document_id'] == doc['id'] and c['page'] is not None}) for doc in documents}
+    coverage['sources_by_document'] = {doc['id']: sum(c['document_id'] == doc['id'] for c in contexts) for doc in documents}
+    return coverage
+
+
+async def _generate_summary(contexts: list[dict[str, Any]], settings: dict[str, Any], question: str,
+                            exchange_id: str, documents: list[dict[str, Any]]) -> str:
+    batches = summary_batches(contexts)
+    answers = []
+    for index, batch in enumerate(batches, 1):
+        name = batch[0]['document_name']
+        db.set_generation_progress(exchange_id, 'answer', '逐份整理资料',
+                                   f'正在整理《{name}》，第 {index}/{len(batches)} 批，本批 {len(batch)} 个资料片段。',
+                                   activity=source_activity(batch))
+        requirement = (question + f'\n本次仅整理《{name}》的所给页面。保留本部分独有的概念、公式、算法、题型与例题，'
+                       '覆盖开头、中间和末尾；引用只能使用本次页面的编号，不要写其他课件的内容。')
+        answer = await make_summary(batch, settings, question=requirement)
+        answer, used = cited_sources(answer, batch, renumber=False)
+        if model_configured(settings) and not used:
+            raise RuntimeError(f'《{name}》的整理没有提供有效资料引用，无法确认已覆盖该来源，请重新生成。')
+        if len(batches) > 1:
+            answer = f"# {' '.join(name.split())}（第 {index}/{len(batches)} 批）\n\n{answer}"
+        answers.append(answer)
+    if not batches:
+        return '给定资料中未找到可整理的内容。'
+    missing = [doc['name'] for doc in documents if doc['id'] not in {c['document_id'] for c in contexts}]
+    if missing:
+        answers.append('# 未能整理的来源\n\n' + '\n'.join(f'- 《{name}》：尚无可用文字，请检查解析或图片识别。' for name in missing))
+    return '\n\n'.join(answers)
+
+
 @app.post("/api/summary")
 async def summary(payload: SummaryRequest) -> dict[str, Any]:
     payload = payload.model_copy(update={'notebook_id': payload.notebook_id or 'default'})
@@ -765,14 +815,15 @@ async def _summary(payload: SummaryRequest, exchange_id: str) -> dict[str, Any]:
         contexts = _summary_contexts([doc["id"] for doc in selected])
         if not contexts:
             raise HTTPException(status_code=400, detail="资料尚未解析出可整理的文字，请检查图片识别状态。")
-        coverage = summary_coverage(contexts)
+        coverage = _summary_scope(contexts, selected)
         coverage['unread_image_pages'] = unread
         if unread:
             question += f"\n资料解析状态：{unread}。这些页含图片但识别失败，不是未提供页面，不要猜测图片内容。"
         db.set_generation_progress(exchange_id, 'answer', '生成复习提纲', f'已读取 {len(contexts)} 个资料片段，正在整理下列课件的提纲与引用。',
                                    activity=source_activity(contexts))
-        answer = await make_summary(contexts, settings, question=question)
+        answer = await _generate_summary(contexts, settings, question, exchange_id, selected)
         answer, contexts = cited_sources(answer, contexts)
+        coverage.update(summary_coverage_data(coverage, contexts))
     except Exception as exc:
         db.finish_pending_exchange(exchange_id, {"detail": str(exc)}, error=True)
         if isinstance(exc, HTTPException):

@@ -671,11 +671,27 @@ function updateAssistantMessage(messageId, answer, citations, mode, sourceMode, 
     const coverage = options.coverage;
     const note = document.createElement("div");
     note.className = "document-meta summary-coverage";
-    note.textContent = `整理范围：${coverage.documents.length} 份资料，${coverage.pages ? `${coverage.pages} 个有文字的页面` : `${coverage.sources} 个片段`}；实际引用 ${citations?.length || 0} 处。`;
+    const selected = coverage.selected_documents || coverage.documents;
+    const citedDocuments = new Set((citations || []).map(citation => citation.document_id || citation.document_name));
+    note.textContent = `读取范围：${coverage.read_document_ids?.length ?? coverage.documents.length}/${selected.length} 份资料，${coverage.pages ? `${coverage.pages} 个有文字的页面` : `${coverage.sources} 个片段`}；回答引用 ${citedDocuments.size} 份、${citations?.length || 0} 处。读取范围不代表知识点已全部覆盖。`;
     if (coverage.unread_image_pages?.length) {
       note.textContent += ` 图片未识别：${coverage.unread_image_pages.map((item) => `${item.document_name} 第 ${item.pages.join('、')} 页`).join('；')}。`;
     }
     body.append(note);
+    const disclosure = document.createElement('details');
+    disclosure.className = 'summary-source-coverage';
+    const heading = document.createElement('summary');
+    heading.textContent = '逐份来源核对';
+    disclosure.append(heading);
+    for (const saved of coverage.document_details || selected.map(name => ({ name }))) {
+      const references = (citations || []).filter(citation => saved.id ? citation.document_id === saved.id : citation.document_name === saved.name);
+      const pages = new Set(references.map(citation => citation.page).filter(page => page != null));
+      const row = document.createElement('p');
+      const read = saved.read_pages > 0 ? `读取 ${saved.read_pages} 页；` : saved.read_sources > 0 ? `读取 ${saved.read_sources} 个文字片段；` : saved.read_sources === 0 ? '无可用文字；' : '';
+      row.textContent = `${saved.name}：${read}${references.length ? `引用 ${pages.size ? `${pages.size} 页、` : ''}${references.length} 处` : '本回答未引用该来源'}。`;
+      disclosure.append(row);
+    }
+    body.append(disclosure);
   }
   if (citations?.length) {
     const referenced = new Set([...body.querySelectorAll('.citation-ref')].map((button) => Number(button.dataset.citation)));
