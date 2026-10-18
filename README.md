@@ -1,6 +1,6 @@
 # 智学笔记
 
-源码与更新保存在私有仓库：[liyineng/zhixue-notes](https://github.com/liyineng/zhixue-notes)。
+源码与更新保存在公开仓库：[liyineng/zhixue-notes](https://github.com/liyineng/zhixue-notes)。
 
 模型可插拔的课程资料学习助手。第一版已经可以本机运行，完成以下闭环：
 
