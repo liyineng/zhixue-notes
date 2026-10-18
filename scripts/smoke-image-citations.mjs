@@ -61,7 +61,7 @@ print(json.dumps({"pdf":base64.b64encode(doc.tobytes()).decode(),"png":base64.b6
     assert.deepEqual(payload.image_ids, [image.id]);
     assert.equal(payload.notebook_id, notebook.id);
     assert.match(payload.image_text, /protocol/);
-    const result = { answer: "- 协议定义数据交换规则 [1]。\n- 分层降低复杂性 [2]。\n- 规则也约束通信双方 [3]。\n\n## 最终结果\n\n| 主机 | B1 端口 | B2 端口 |\n|---|---|---|\n| **H1** | 1 | 1 |\n| H5 | 2 | 2 |\n\n1. 学习源地址\n2. 查目的地址\n\n`[99]` <script>throw Error(1)</script>", citations, mode: "model", source_mode: "knowledge_base", image_question_text: payload.image_text, image_recognition_mode: "manual" };
+    const result = { answer: "- 协议定义数据交换规则【1】。\n- 分层降低复杂性【2】。\n- 规则也约束通信双方【3】。\n\n## 最终结果\n\n| 主机 | B1 端口 | B2 端口 |\n|---|---|---|\n| **H1** | 1 | 1 |\n| H5 | 2 | 2 |\n\n1. 学习源地址\n2. 查目的地址\n\n`[99]` <script>throw Error(1)</script>", citations, mode: "model", source_mode: "knowledge_base", image_question_text: payload.image_text, image_recognition_mode: "manual" };
     execFileSync(python, ["-c", `
 import sys,json
 from uuid import uuid4
@@ -76,6 +76,13 @@ db.finish_exchange(i,d["result"])
   const refs = page.locator(".message.assistant .message-body > ul .citation-ref");
   await refs.nth(1).waitFor();
   assert.equal(await page.locator('.message.assistant table tbody tr').count(), 2);
+  const disclosure = page.locator('.citation-disclosure');
+  assert.match(await disclosure.locator('summary').innerText(), /引用来源（3）/);
+  assert.equal(await disclosure.getAttribute('open'), null);
+  await disclosure.locator('summary').click();
+  assert.equal(await disclosure.locator('.citation-card').count(), 3);
+  await disclosure.locator('.citation-card').nth(1).click();
+  await page.locator('.highlight-box').nth(1).waitFor();
   assert.equal(await page.locator('.message.assistant ol li').count(), 2);
   assert.equal(await page.locator('.message.assistant .citation-ref[data-citation="99"]').count(), 0);
   assert.equal(await page.locator('.message.assistant script').count(), 0);
@@ -106,7 +113,7 @@ db.finish_exchange(i,d["result"])
   assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1));
   await page.screenshot({ path: "artifacts/image-citations/mobile.png", fullPage: true });
   assert.deepEqual(errors, []);
-  console.log(JSON.stringify({ passed: true, localOCR: true, imageOnlyQuestion: true, editableText: true, restoredImage: true, samePageCitationColors: true, errors }));
+  console.log(JSON.stringify({ passed: true, localOCR: true, imageOnlyQuestion: true, editableText: true, restoredImage: true, samePageCitationColors: true, legacyCjkCitations: true, disclosureAndNavigation: true, errors }));
 } finally {
   await api(`/api/notebooks/${notebook.id}/chat`, "DELETE");
   if (documentId) await api(`/api/documents/${documentId}`, "DELETE");

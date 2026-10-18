@@ -651,7 +651,7 @@ function updateAssistantMessage(messageId, answer, citations, mode, sourceMode, 
     body.append(note);
   }
   if (citations?.length) {
-    const referenced = new Set([...answer.matchAll(/\[(\d+)\]/g)].map((match) => Number(match[1])));
+    const referenced = new Set([...body.querySelectorAll('.citation-ref')].map((button) => Number(button.dataset.citation)));
     const sources = citations.filter((citation) => referenced.has(Number(citation.index)));
     const disclosure = document.createElement("details");
     disclosure.className = "citation-disclosure";
