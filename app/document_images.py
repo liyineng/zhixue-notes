@@ -8,6 +8,8 @@ import re
 import shutil
 import subprocess
 import tempfile
+import zipfile
+from xml.etree import ElementTree
 from pathlib import Path
 from typing import Any
 from collections.abc import Callable
@@ -18,8 +20,69 @@ from starlette.concurrency import run_in_threadpool
 
 from . import db
 from .question_images import read_question
+from .previews import presentation_pdf, PreviewError
 
 _locks: dict[str, asyncio.Lock] = {}
+
+
+def presentation_equation_pages(path: Path) -> list[int]:
+    """Locate Equation/MathType objects, including objects without text anchors."""
+    pages = []
+    with zipfile.ZipFile(path) as archive:
+        for name in archive.namelist():
+            match = re.fullmatch(r'ppt/slides/slide(\d+)\.xml', name)
+            if not match:
+                continue
+            root = ElementTree.fromstring(archive.read(name))
+            if any(node.attrib.get('progId', '').lower().startswith(('equation.', 'mathtype'))
+                   for node in root.iter()):
+                pages.append(int(match[1]))
+    return sorted(pages)
+
+
+async def ensure_presentation_formulas(document: dict[str, Any], settings: dict[str, Any],
+                                       on_page: Callable[[int], None] | None = None) -> dict[str, Any]:
+    """Read omitted equation objects from real slide images, only for formula inventories."""
+    if document['kind'] != 'pptx':
+        return {'added_pages': [], 'unread_pages': []}
+    async with _locks.setdefault(document['id'], asyncio.Lock()):
+        candidates = await run_in_threadpool(presentation_equation_pages, Path(document['path']))
+        existing = db.document_chunk_ids(document['id'])
+        pending = [page for page in candidates if f"formulas-v1-{document['id']}-{page}" not in existing]
+        if not pending:
+            return {'added_pages': [], 'unread_pages': []}
+        if not settings.get('vision_model'):
+            return {'added_pages': [], 'unread_pages': pending}
+        try:
+            path = await run_in_threadpool(presentation_pdf, document)
+        except (PreviewError, OSError):
+            return {'added_pages': [], 'unread_pages': pending}
+        added, unread = [], []
+        for page in pending:
+            if on_page:
+                on_page(page)
+            with pymupdf.open(path) as pdf:
+                bbox = list(pdf[page - 1].rect)
+            png, _, _ = await run_in_threadpool(render_region, path, page, bbox)
+            try:
+                with tempfile.TemporaryDirectory(prefix='zhixue-formulas-') as temp:
+                    image = Path(temp) / 'page.png'
+                    image.write_bytes(png)
+                    text, _ = await read_question([{'path': str(image), 'ocr_text': ''}], settings,
+                        instruction=r'逐字转写本页实际出现的所有公式及其相邻的名称、符号含义、条件。'
+                        r'数学表达式必须用 LaTeX 的 \( ... \) 或 \[ ... \]，保留上下标、分式、根号。'
+                        '只转写图片，不推导、不用常识补全、不加复习提纲。任何公式看不清请标为[看不清]。'
+                        '若本页没有公式，仅输出[无公式]。')
+                if not text.strip() or '[看不清]' in text:
+                    unread.append(page)
+                    continue  # Retry uncertain pages rather than treating them as fully read.
+                lines = [{'page': page, 'text': '课件公式转写：\n' + text, 'bbox': bbox,
+                          'image_recognition': 'vision'}]
+                if db.append_image_chunk(document['id'], f"formulas-v1-{document['id']}-{page}", page, lines):
+                    added.append(page)
+            except (RuntimeError, ValueError, OSError, httpx.HTTPError):
+                unread.append(page)
+        return {'added_pages': added, 'unread_pages': unread}
 
 
 def image_regions(path: Path) -> list[dict[str, Any]]:

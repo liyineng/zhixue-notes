@@ -57,7 +57,10 @@ export function renderAnswerHtml(text, citations = []) {
         if (i >= lines.length) break;
         math.push(lines[i++]);
       }
-      out.push(`<div class="answer-math">${escape(math.join('\n'))}</div>`);
+      const block = math.join('\n');
+      const closing = block.indexOf(delimiter, 2);
+      const end = closing < 0 ? block.length : closing + delimiter.length;
+      out.push(`<div class="answer-math">${escape(block.slice(0, end))}${render(block.slice(end))}</div>`);
       continue;
     }
     const fence = line.match(/^(`{3,}|~{3,})/);

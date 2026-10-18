@@ -30,4 +30,11 @@ assert.match(math, /\\\(x_1 \* x_2/);
 assert.match(math, /class="answer-math">\\\[\n\\frac/);
 assert.equal((math.match(/class="citation-ref"/g) || []).length, 1);
 assert.match(math, /3 · 来源缺失/);
+const formulaCitations = renderAnswerHtml(String.raw`\[f_0=\frac{1}{2\pi\sqrt{LC}}\] [2]
+
+\[
+A[2]=x_1
+\] 【2】`, [{ index: 2 }]);
+assert.equal((formulaCitations.match(/class="citation-ref"/g) || []).length, 2);
+assert.match(formulaCitations, /A\[2\]=x_1/); // Formula brackets are not source references.
 console.log(JSON.stringify({ passed: true, tables: true, orderedLists: true, headings: true, escapedHtml: true, validCitationsOnly: true }));

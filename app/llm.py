@@ -70,6 +70,22 @@ SUMMARY_PROMPT = """你是课程资料学习助手。请仅依据用户提供的
 控制在约 1500～2200 汉字，以主题提纲覆盖全貌，避免重复同一知识点。
 """
 
+MATH_FORMAT = r"""
+公式必须使用 LaTeX：行内用 \( ... \)，独立公式用 \[ ... \]；上下标、分式、根号分别用 _、^、\frac、\sqrt。
+不要用 Unicode 上下标或 √ 拼接复杂公式，不要把公式放进代码块或 Markdown 表格。
+资料引用使用半角 [1]，放在数学定界符外。保留原式的符号、下标和适用条件。
+"""
+SUMMARY_PROMPT += MATH_FORMAT
+
+FORMULA_PROMPT = r"""你是课程资料学习助手。用户要的是公式清单，直接逐条给出实际数学表达式。
+只依据本批资料，按主题列出：公式名称、独立展示的完整公式、资料中给出的符号含义与适用条件、支持它的引用。
+合并重复公式但保留不同条件或变形；不要用“某公式的表达式”代替公式本身。
+不要套用本章摘要、核心概念、复习提纲、常见问题的模板，不要添加习题或考试建议。
+每条公式必须能从本批资料直接读出；只有名称而无表达式、图片未识别或标记看不清时，列入“未能读取的公式”，不得用常识补写。
+通读本批所有页面，不遗漏末尾；只使用本批提供的引用编号，不从编号或页码空缺推断缺页。
+没有公式依据时明确说明。近期对话和旧回答不是公式依据，不得照抄。
+""" + MATH_FORMAT
+
 
 def model_configured(settings: dict[str, Any]) -> bool:
     return bool(
@@ -369,6 +385,7 @@ async def make_summary(
     contexts: list[dict[str, Any]],
     settings: dict[str, Any],
     question: str = "",
+    *, formula_inventory: bool = False,
 ) -> str:
     if not contexts:
         return "给定资料中未找到依据。"
@@ -376,7 +393,7 @@ async def make_summary(
         return extractive_answer(contexts)
 
     messages = [
-        {"role": "system", "content": SUMMARY_PROMPT},
+        {"role": "system", "content": FORMULA_PROMPT if formula_inventory else SUMMARY_PROMPT},
         {
             "role": "user",
             "content": f"整理要求：{question or '整理当前选中的全部课程资料'}\n\n按页提供的资料：\n{_context_text(contexts, character_limit=100000)}",

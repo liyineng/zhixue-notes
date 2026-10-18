@@ -32,9 +32,9 @@ from .config import (
 )
 from .llm import analyze_question, answer_question, make_summary, model_configured, select_evidence, cited_sources
 from .parsers import UnsupportedDocument, parse_document
-from .retrieval import BM25Index, excerpt, focus_source, page_sources, summary_documents, named_question_documents, exercise_sources, is_exercise_question
+from .retrieval import BM25Index, excerpt, focus_source, page_sources, summary_documents, named_question_documents, exercise_sources, is_exercise_question, is_formula_inventory
 from .question_images import MAX_IMAGE_BYTES, normalize_image, local_ocr, read_question
-from .document_images import ensure_image_text
+from .document_images import ensure_image_text, ensure_presentation_formulas
 from urllib.parse import quote
 
 mimetypes.add_type("text/javascript", ".mjs")
@@ -58,7 +58,8 @@ def _index() -> BM25Index:
     return _build_index(_index_version)
 
 
-async def _ensure_source_images(documents: list[dict[str, Any]], settings: dict[str, Any], exchange_id: str | None = None) -> list[dict[str, Any]]:
+async def _ensure_source_images(documents: list[dict[str, Any]], settings: dict[str, Any], exchange_id: str | None = None,
+                                *, formulas: bool = False) -> list[dict[str, Any]]:
     unread = []
     for index, document in enumerate(documents, 1):
         if exchange_id:
@@ -66,10 +67,13 @@ async def _ensure_source_images(documents: list[dict[str, Any]], settings: dict[
                                        f"正在检查《{document['name']}》（{index}/{len(documents)}），读取文字及图片页识别结果。",
                                        activity=source_activity([document]))
         def on_page(page: int) -> None:
-            db.set_generation_progress(exchange_id, 'sources', '识别课件图片页',
-                                       f"正在识别《{document['name']}》第 {page} 页的图片文字。",
+            detail = '公式及符号条件' if formulas and document['kind'] == 'pptx' else '图片文字'
+            db.set_generation_progress(exchange_id, 'sources', '识别课件公式' if detail.startswith('公式') else '识别课件图片页',
+                                       f"正在识别《{document['name']}》第 {page} 页的{detail}。",
                                        activity=source_activity([{'document_id': document['id'], 'document_name': document['name'], 'page': page}]))
         report = await ensure_image_text(document, settings, on_page=on_page) if exchange_id and document['kind'] == 'pdf' else await ensure_image_text(document, settings)
+        if formulas and document['kind'] == 'pptx':
+            report = await ensure_presentation_formulas(document, settings, on_page=on_page if exchange_id else None)
         if report['added_pages']:
             _invalidate_index()
         if report['unread_pages']:
@@ -702,6 +706,9 @@ async def _ask(payload: AskRequest, exchange_id: str) -> dict[str, Any]:
             document_names,
             settings,
         )
+        formula_inventory = is_formula_inventory(question)
+        if formula_inventory:
+            analysis.update(intent='summary', needs_retrieval=True)
         named_scope = named_question_documents(question, selected_documents) if not references else None
         if named_scope is not None and document_ids:
             if not named_scope:
@@ -725,7 +732,10 @@ async def _ask(payload: AskRequest, exchange_id: str) -> dict[str, Any]:
                 if not selected_documents:
                     raise HTTPException(status_code=400, detail="你提到的课件不在当前勾选的来源中，请先勾选该课件。")
                 document_names = [document["name"] for document in selected_documents]
-                unread = await _ensure_source_images(selected_documents, settings, exchange_id)
+                if formula_inventory:
+                    unread = await _ensure_source_images(selected_documents, settings, exchange_id, formulas=True)
+                else:
+                    unread = await _ensure_source_images(selected_documents, settings, exchange_id)
                 db.set_generation_progress(exchange_id, 'retrieval', '读取课件内容', f'正在整理 {len(selected_documents)} 份课件的完整页面。')
                 contexts = _summary_contexts([document["id"] for document in selected_documents])
             elif references:
@@ -786,7 +796,12 @@ async def _ask(payload: AskRequest, exchange_id: str) -> dict[str, Any]:
                                    f'已选出 {len(contexts)} 处依据，正在结合下列资料组织回答。' if contexts else '正在生成回答；本次没有可引用的资料依据。',
                                    activity=source_activity(contexts))
         if analysis["intent"] == "summary":
-            answer = await _generate_summary(contexts, settings, effective_question, exchange_id, selected_documents)
+            answer = await _generate_summary(contexts, settings, effective_question, exchange_id, selected_documents,
+                                             formula_inventory=formula_inventory)
+            if formula_inventory and unread:
+                answer += '\n\n## 未能读取的公式页\n\n' + '\n'.join(
+                    f"- 《{item['document_name']}》第 {', '.join(map(str, item['pages']))} 页：图片或公式对象尚未成功识别，以上清单不保证完整。"
+                    for item in unread)
         else:
             answer = await answer_question(effective_question, contexts, settings,
                                            document_names, analysis["needs_retrieval"])
@@ -808,6 +823,7 @@ async def _ask(payload: AskRequest, exchange_id: str) -> dict[str, Any]:
         "mode": "model" if model_configured(settings) else "extractive",
         "source_mode": "knowledge_base" if contexts else "general_knowledge",
         "intent": analysis["intent"],
+        "output_mode": "formulas" if formula_inventory else analysis["intent"],
         "search_query": analysis["search_query"],
         "retrieval_hits": retrieval_hits,
         "summary_coverage": coverage,
@@ -849,7 +865,7 @@ def _summary_scope(contexts: list[dict[str, Any]], documents: list[dict[str, Any
 
 
 async def _generate_summary(contexts: list[dict[str, Any]], settings: dict[str, Any], question: str,
-                            exchange_id: str, documents: list[dict[str, Any]]) -> str:
+                            exchange_id: str, documents: list[dict[str, Any]], *, formula_inventory: bool = False) -> str:
     batches = summary_batches(contexts)
     answers = []
     for index, batch in enumerate(batches, 1):
@@ -857,9 +873,13 @@ async def _generate_summary(contexts: list[dict[str, Any]], settings: dict[str, 
         db.set_generation_progress(exchange_id, 'answer', '逐份整理资料',
                                    f'正在整理《{name}》，第 {index}/{len(batches)} 批，本批 {len(batch)} 个资料片段。',
                                    activity=source_activity(batch))
-        requirement = (question + f'\n本次仅整理《{name}》的所给页面。保留本部分独有的概念、公式、算法、题型与例题，'
+        focus = '只列实际公式、符号含义和适用条件，不生成复习提纲，' if formula_inventory else '保留本部分独有的概念、公式、算法、题型与例题，'
+        requirement = (question + f'\n本次仅整理《{name}》的所给页面。' + focus +
                        '覆盖开头、中间和末尾；引用只能使用本次页面的编号，不要写其他课件的内容。')
-        answer = await make_summary(batch, settings, question=requirement)
+        if formula_inventory:
+            answer = await make_summary(batch, settings, question=requirement, formula_inventory=True)
+        else:
+            answer = await make_summary(batch, settings, question=requirement)
         answer, used = cited_sources(answer, batch, renumber=False)
         if model_configured(settings) and not used:
             raise RuntimeError(f'《{name}》的整理没有提供有效资料引用，无法确认已覆盖该来源，请重新生成。')

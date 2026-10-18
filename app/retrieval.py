@@ -81,6 +81,15 @@ def is_exercise_question(question: str) -> bool:
     return bool(re.search(r'(?:做|解|算)', question) and re.search(r'(?:题|练习)', question))
 
 
+def is_formula_inventory(question: str) -> bool:
+    """Classify the current request only; history must not change its output format."""
+    if not re.search(r'公式|表达式', question):
+        return False
+    return bool(re.search(r'所有|全部|清单|汇总|整理|总结|列出|罗列|归纳|大全', question)
+                or re.search(r'(?:有哪些|有哪几|有什么)[^，。！？\n]{0,12}(?:公式|表达式)', question)
+                or re.search(r'(?:公式|表达式)(?:都|主要|分别)?有哪些[？?。\s]*$', question))
+
+
 def exercise_sources(question: str, contexts: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Find actual labelled problem statements before keyword ranking can lose their images."""
     if not is_exercise_question(question):
