@@ -14,7 +14,6 @@ const state = {
   applications: [],
   activeQuiz: null,
   quizGeneration: 0,
-  rightPaneMode: 'document',
   selectedSources: new Set(),
   notes: [],
   answers: new Map(),
@@ -382,6 +381,7 @@ async function uploadFiles(files) {
 }
 
 function resetViewer() {
+  document.getElementById('viewer-document').classList.remove('is-text');
   state.viewerGeneration++;
   state.renderGeneration++;
   state.renderTask?.cancel();
@@ -411,7 +411,7 @@ function resetViewer() {
 }
 
 async function openDocument(doc) {
-  setRightPane('document');
+  updateStudyLayout();
   if (["pdf", "pptx"].includes(doc.kind)) {
     setMobilePane("viewer");
     await openPdf(doc.id, 1, []);
@@ -422,6 +422,7 @@ async function openDocument(doc) {
 
 async function openTextDocument(doc, errorMessage = '') {
   resetViewer();
+  document.getElementById('viewer-document').classList.add('is-text');
   state.viewerDocumentId = doc.id;
   const generation = state.viewerGeneration;
   setMobilePane("viewer");
@@ -1147,7 +1148,7 @@ function plainSourceText(citation) {
 }
 
 function showCitation(citation, messageId, citationIndex) {
-  setRightPane('document');
+  updateStudyLayout();
   if (!["pdf", "pptx"].includes(citation.document_kind)) resetViewer();
   state.activeCitation = Number(citationIndex);
   state.highlightMessageId = messageId;
@@ -1178,6 +1179,7 @@ function showCitation(citation, messageId, citationIndex) {
       references.filter(ref => ref.document_id === citation.document_id)
     );
   } else {
+    document.getElementById('viewer-document').classList.add('is-text');
     ui["highlight-legend"].hidden = true;
     setMobilePane("viewer");
     dom.viewerEmpty.hidden = false;
@@ -1198,6 +1200,7 @@ function setMobilePane(pane) {
   });
   dom.workspace.classList.toggle("show-viewer", pane === "viewer");
   document.querySelector('.app-shell').dataset.mobilePane = pane;
+  dom.workspace.dispatchEvent(new Event('panelschange'));
 }
 
 async function loadSettings() {
@@ -1315,19 +1318,18 @@ function renderApplications() {
   }
 }
 
-function setRightPane(mode) {
-  const quiz = mode === 'quiz' && Boolean(state.activeQuiz);
-  state.rightPaneMode = quiz ? 'quiz' : 'document';
-  document.getElementById('viewer-document').hidden = quiz;
+function updateStudyLayout() {
+  const quiz = Boolean(state.activeQuiz);
+  document.querySelector('.viewer-pane').classList.toggle('study-open', quiz);
+  document.getElementById('viewer-document').hidden = false;
   document.getElementById('quiz-workspace').hidden = !quiz;
+  document.getElementById('study-resizer').hidden = !quiz;
   document.getElementById('right-pane-tabs').hidden = !state.activeQuiz;
-  document.getElementById('right-document-tab').setAttribute('aria-pressed', String(!quiz));
-  document.getElementById('right-quiz-tab').setAttribute('aria-pressed', String(quiz));
-  document.querySelector('.mobile-tab[data-pane="viewer"]').textContent = quiz ? '测验' : '原文';
+  document.querySelector('.mobile-tab[data-pane="viewer"]').textContent = quiz ? '原文与测验' : '原文';
   const key = `zhixue-active-quiz:${state.notebookId}`;
   if (quiz) localStorage.setItem(key, state.activeQuiz.id);
   else localStorage.removeItem(key);
-  if (!quiz && state.pdfDocument) requestAnimationFrame(() => { if (state.rightPaneMode === 'document') renderPdfPage(state.pdfPage); });
+  dom.workspace.dispatchEvent(new Event('panelschange'));
 }
 
 function closeQuizPanel(forget = true) {
@@ -1338,32 +1340,35 @@ function closeQuizPanel(forget = true) {
     document.getElementById('right-pane-tabs').hidden = true;
     document.getElementById('quiz-workspace').hidden = true;
     document.getElementById('viewer-document').hidden = false;
+    document.getElementById('study-resizer').hidden = true;
+    document.querySelector('.viewer-pane').classList.remove('study-open');
+    dom.workspace.dispatchEvent(new Event('panelschange'));
     document.querySelector('.mobile-tab[data-pane="viewer"]').textContent = '原文';
-    state.rightPaneMode = 'document'; return;
+    return;
   }
   state.activeQuiz = null; state.quizGeneration++;
   document.getElementById('quiz-panel-body').replaceChildren();
-  document.getElementById('quiz-panel-source').hidden = true;
-  setRightPane('document');
+  updateStudyLayout();
 }
 
 async function openQuizPanel(exchange, restore = false) {
   if (state.activeQuiz?.id === exchange.id && !restore) {
-    setRightPane('quiz'); setMobilePane('viewer'); return;
+    updateStudyLayout(); setMobilePane('viewer'); return;
   }
   const notebook = state.notebookId, token = ++state.quizGeneration;
   state.activeQuiz = { id: exchange.id, notebook };
   const content = document.createElement('div'); content.className = 'embedded-quiz-content'; content.textContent = '正在读取测验…';
   document.getElementById('quiz-panel-body').replaceChildren(content);
-  document.getElementById('quiz-panel-source').hidden = true;
   document.getElementById('quiz-workspace-title').textContent = exchange.result.quiz.topic || exchange.question || '课程测验';
-  setRightPane('quiz');
+  updateStudyLayout();
   setMobilePane('viewer');
   const endpoint = `/api/notebooks/${encodeURIComponent(notebook)}/quiz/${encodeURIComponent(exchange.id)}`;
   const isCurrent = () => token === state.quizGeneration && notebook === state.notebookId;
   try {
     let result = await api(endpoint);
     if (!isCurrent()) return;
+    const citationKey = `quiz-${exchange.id}`;
+    state.messageCitations.set(citationKey, result.citations);
     const update = async (suffix, body) => {
       const updated = await api(endpoint + suffix, jsonOptions('POST', body));
       result = updated;
@@ -1372,7 +1377,6 @@ async function openQuizPanel(exchange, restore = false) {
         if (saved) saved.result = updated;
         renderApplications();
       }
-      if (isCurrent() && suffix === '/reset') document.getElementById('quiz-panel-source').hidden = true;
       return updated;
     };
     renderQuiz(content, result, { colorCitation,
@@ -1382,13 +1386,11 @@ async function openQuizPanel(exchange, restore = false) {
         if (!isCurrent()) return;
         const source = result.citations.find(c => c.index === index);
         if (!source) return;
-        const pane = document.getElementById('quiz-panel-source'); pane.hidden = false; colorCitation(pane, index);
-        document.getElementById('quiz-panel-source-title').textContent = `[${index}] ${source.document_name}${source.page ? ` · 第 ${source.page} 页` : ''}`;
-        document.getElementById('quiz-panel-source-text').textContent = source.text;
-        document.getElementById('quiz-panel-source-file').href = `/api/documents/${encodeURIComponent(source.document_id)}/${source.document_kind === 'pptx' ? 'preview' : 'file'}${source.page ? `#page=${Number(source.page)}` : ''}`;
-        pane.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+        state.messageCitations.set(citationKey, result.citations);
+        showCitation(source, citationKey, index);
       },
     });
+    if (!state.viewerDocumentId && result.citations.length) showCitation(result.citations[0], citationKey, result.citations[0].index);
   } catch (error) {
     if (!isCurrent()) return;
     content.textContent = error.message; content.classList.add('feature-error');
@@ -1397,8 +1399,6 @@ async function openQuizPanel(exchange, restore = false) {
     localStorage.removeItem(`zhixue-active-quiz:${notebook}`);
   }
 }
-document.getElementById('right-document-tab').addEventListener('click', () => setRightPane('document'));
-document.getElementById('right-quiz-tab').addEventListener('click', () => setRightPane('quiz'));
 document.getElementById('close-quiz-panel').addEventListener('click', () => { closeQuizPanel(); if (innerWidth <= 1080) setMobilePane('chat'); });
 
 async function generateQuiz(configuration) {
@@ -1593,7 +1593,7 @@ document.querySelectorAll(".mobile-tab").forEach((tab) => {
 
 window.addEventListener("resize", () => {
   if (innerWidth > 760 && document.querySelector('.app-shell').dataset.mobilePane === 'sources') setMobilePane('chat');
-  if (state.pdfDocument && state.rightPaneMode === 'document') renderPdfPage(state.pdfPage);
+  if (state.pdfDocument && document.getElementById('viewer-document').clientWidth > 0) renderPdfPage(state.pdfPage);
 });
 
 function setLibraryTab(tab) {
@@ -2002,7 +2002,7 @@ async function initialize() {
   } finally { setBusy(state.chatPending); }
 }
 
-initializePanelResize(() => { if (state.pdfDocument && state.rightPaneMode === 'document') renderPdfPage(state.pdfPage); });
+initializePanelResize(() => { if (state.pdfDocument && document.getElementById('viewer-document').clientWidth > 0) renderPdfPage(state.pdfPage); });
 initialize();
 
 initializeCloudSync({ api, jsonOptions, showToast, refresh: async () => {

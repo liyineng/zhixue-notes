@@ -4,6 +4,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { pathToFileURL } from 'node:url';
+import { execFileSync } from 'node:child_process';
 const modules = path.join(os.homedir(), '.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules');
 const { chromium } = await import(pathToFileURL(path.join(modules, 'playwright/index.mjs')));
 const browser = await chromium.launch({ headless: true });
@@ -12,10 +13,18 @@ const base = process.env.APP_URL || 'http://127.0.0.1:8765';
 const output = path.resolve('artifacts/quizzes'); await fs.mkdir(output, { recursive: true });
 const errors = [];
 page.on('pageerror', error => errors.push(error.message));
-const docs = [{ id: 'course', name: 'L02-谐振回路.md', kind: 'md', page_count: 1, chunk_count: 1, size_bytes: 300 },
+const pdf = execFileSync(path.resolve('.venv/bin/python'), ['-c', `
+import sys,pymupdf
+with pymupdf.open() as pdf:
+ page=pdf.new_page(width=600,height=720)
+ page.insert_text((50,70),'Series resonance: inductive and capacitive reactances cancel.')
+ sys.stdout.buffer.write(pdf.tobytes())
+`]);
+const docs = [{ id: 'course', name: 'L02-谐振回路.pdf', kind: 'pdf', page_count: 1, chunk_count: 1, size_bytes: 300 },
   { id: 'other', name: 'L03-放大电路.md', kind: 'md', page_count: 1, chunk_count: 1, size_bytes: 300 }];
 let exchanges = [], deleted = [], configuration, summaryConfiguration;
-const citation = { index: 1, document_id: 'course', document_kind: 'md', document_name: docs[0].name, page: null, text: '串联谐振时，感抗与容抗抵消。', lines: [] };
+const citation = { index: 1, document_id: 'course', document_kind: 'pdf', document_name: docs[0].name, page: 1,
+  text: 'Series resonance: inductive and capacitive reactances cancel.', lines: [{page:1,text:'Series resonance: inductive and capacitive reactances cancel.',bbox:[50,58,500,75]}] };
 exchanges.push({ id: 'fixture-conversation', status: 'complete', question: '解释串联谐振', images: [], reply_to: {}, created_at: '2026-01-01',
   result: { answer: '## 章节复习\n\n串联谐振时感抗与容抗抵消，回路呈纯电阻性。[1]', citations: [citation], mode: 'model', source_mode: 'knowledge_base' } });
 const quizResult = id => ({ chat_id: id, answer: '已生成 2 道测验。', mode: 'model', source_mode: 'knowledge_base', citations: [citation], warnings: [], quiz: {
@@ -33,6 +42,7 @@ await page.route('**/api/**', async route => {
   if (p === '/api/sync') return fulfill({ enabled: false, available: false, conflicts: [], revision: '' });
   if (p === '/api/notebooks') return fulfill({ notebooks: [{ id: 'default', name: '电路复习 · 测验验收', document_count: 2 }] });
   if (p === '/api/documents') return fulfill({ documents: docs });
+  if (p === '/api/documents/course/file') return route.fulfill({ contentType: 'application/pdf', body: pdf });
   if (p === '/api/notes') return fulfill({ notes: [] });
   if (p === '/api/notebooks/default/chat' && method === 'GET') return fulfill({ exchanges, deleted_count: deleted.length });
   if (p === '/api/notebooks/default/chat' && method === 'DELETE') {
@@ -127,11 +137,16 @@ try {
   assert.equal(await page.locator('.chat-pane').isVisible(), true);
   assert.equal(await page.locator('.sidebar').isVisible(), true);
   await page.locator('#question-input').fill('');
-  await page.locator('#right-document-tab').click();
   assert.equal(await page.locator('#viewer-document').isVisible(), true);
-  assert.equal(await page.locator('#quiz-workspace').isVisible(), false);
-  await page.locator('#right-quiz-tab').click();
   assert.equal(await page.locator('#quiz-workspace').isVisible(), true);
+  await page.locator('#viewer-scroll').waitFor({ state: 'visible' });
+  const original = await page.locator('#viewer-document').boundingBox();
+  const practice = await page.locator('#quiz-workspace').boundingBox();
+  assert(original.x + original.width <= practice.x + 2);
+  const studyHandle = await page.locator('#study-resizer').boundingBox();
+  await page.mouse.move(studyHandle.x + 4, studyHandle.y + 80); await page.mouse.down();
+  await page.mouse.move(studyHandle.x + 24, studyHandle.y + 80); await page.mouse.up();
+  assert((await page.locator('#viewer-document').boundingBox()).width > original.width + 10);
   assert.equal(await page.locator('.quiz-explanation').count(), 0);
   assert.equal(await page.locator('.quiz-check').isDisabled(), true);
   await page.locator('.quiz-option').nth(1).click();
@@ -139,7 +154,9 @@ try {
   await page.locator('.quiz-feedback.is-incorrect').waitFor();
   assert.match(await page.locator('.quiz-status').innerText(), /已答 1 \/ 2.*答对 0/);
   await page.locator('.quiz-source').click();
-  await page.waitForFunction(() => document.querySelector('#quiz-panel-source-text').textContent.includes('感抗与容抗抵消'));
+  await page.waitForFunction(() => document.querySelector('#source-text').textContent.includes('Series resonance'));
+  assert.equal(await page.locator('#quiz-workspace').isVisible(), true);
+  assert.equal(await page.locator('#viewer-scroll').isVisible(), true);
   await page.locator('.quiz-navigation button', { hasText: '下一题' }).click();
   assert.equal(await page.locator('.quiz-option .katex').count(), 4);
   assert.equal(await page.locator('.katex-error').count(), 0);
@@ -151,7 +168,24 @@ try {
   await page.locator('.quiz-finished').waitFor();
   assert.match(await page.locator('.quiz-status').innerText(), /答对 1/);
   await page.screenshot({ path: path.join(output, 'quiz-desktop.png') });
+  for (const width of [1180, 960]) {
+    await page.setViewportSize({ width, height: 900 });
+    const reading = await page.locator('#viewer-document').boundingBox();
+    const solving = await page.locator('#quiz-workspace').boundingBox();
+    assert(reading.height >= 100 && solving.height >= 150);
+    assert(reading.y + reading.height <= solving.y + 2);
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+  }
   await page.setViewportSize({ width: 390, height: 844 });
+  assert.equal(await page.locator('#viewer-document').isVisible(), true);
+  assert.equal(await page.locator('#quiz-workspace').isVisible(), true);
+  const mobileOriginal = await page.locator('#viewer-document').boundingBox();
+  const mobilePractice = await page.locator('#quiz-workspace').boundingBox();
+  assert(mobileOriginal.y + mobileOriginal.height <= mobilePractice.y + 2);
+  assert(mobileOriginal.height >= 100 && mobilePractice.height >= 150);
+  assert.equal(await page.locator('#study-resizer').getAttribute('aria-orientation'), 'horizontal');
+  await page.locator('#study-resizer').focus(); await page.keyboard.press('ArrowUp');
+  assert((await page.locator('#viewer-document').boundingBox()).height < mobileOriginal.height);
   await page.screenshot({ path: path.join(output, 'quiz-mobile.png') });
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
   page.once('dialog', dialog => dialog.accept()); await page.locator('.quiz-reset').click();
@@ -184,7 +218,8 @@ try {
   assert.deepEqual(errors, []);
   console.log(JSON.stringify({ passed: true, settings: true, selectedSourcesOnly: true, grading: true, citations: true,
     persistedAfterReload: true, reset: true, math: true, summary: true, mobile: true, applicationLibrary: true,
-    embeddedQuizPanel: true, conversationPreserved: true, draggableColumns: true, layoutPersistence: true, applicationDeleteUndo: true }));
+    embeddedQuizPanel: true, simultaneousOriginalAndQuiz: true, responsiveStudyLayout: true,
+    conversationPreserved: true, draggableColumns: true, layoutPersistence: true, applicationDeleteUndo: true }));
 } catch (error) {
   await page.screenshot({ path: path.join(output, 'failure.png') });
   console.error(JSON.stringify({ errors, url: page.url() }));
