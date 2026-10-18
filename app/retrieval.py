@@ -26,6 +26,35 @@ def summary_documents(question: str, documents: list[dict[str, Any]]) -> list[di
     return matched or documents
 
 
+def named_question_documents(question: str, documents: list[dict[str, Any]]) -> list[dict[str, Any]] | None:
+    """Recognize explicit course filenames without confusing diagram labels with lessons."""
+    pattern = r'(?<![A-Za-z0-9])([A-Za-z]{1,5})\s*0*(\d{1,3})(?!\d)'
+    prefixes = {'l'} | {prefix.casefold() for doc in documents for prefix, _ in re.findall(pattern, doc['name'])}
+    codes = {(prefix.casefold(), int(number)) for prefix, number in re.findall(pattern, question) if prefix.casefold() in prefixes}
+    if codes:
+        return [doc for doc in documents if codes.intersection(
+            (prefix.casefold(), int(number)) for prefix, number in re.findall(pattern, doc['name']))]
+    matched = [doc for doc in documents if doc['name'] in question or any(
+        title in question for title in re.findall(r'[\u3400-\u9fff]{3,}', doc['name']))]
+    return matched or None
+
+
+def is_exercise_question(question: str) -> bool:
+    return bool(re.search(r'(?:做|解|算)', question) and re.search(r'(?:题|练习)', question))
+
+
+def exercise_sources(question: str, contexts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Find actual labelled problem statements before keyword ranking can lose their images."""
+    if not is_exercise_question(question):
+        return []
+    pages = {int(number) for number in re.findall(r'第\s*(\d+)\s*页', question)}
+    eligible = [context for context in contexts if not pages or context.get('page') in pages]
+    problems = [context for context in eligible if re.search(r'[〔【]\s*题目\s*[〕】]|(?:^|\n)\s*(?:题目|习题|练习题)\s*[:：]', context['text'])]
+    if not problems:
+        problems = [context for context in eligible if re.search(r'例题|练习题|习题|(?:例\s*[一二三四五六七八九\d]+)', context['text'])]
+    return problems[:12]
+
+
 def tokenize(text: str) -> list[str]:
     tokens: list[str] = []
     lowered = text.lower()

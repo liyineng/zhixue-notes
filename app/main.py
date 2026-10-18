@@ -28,7 +28,7 @@ from .config import (
 )
 from .llm import analyze_question, answer_question, make_summary, model_configured, select_evidence, cited_sources
 from .parsers import UnsupportedDocument, parse_document
-from .retrieval import BM25Index, excerpt, focus_source, page_sources, summary_documents
+from .retrieval import BM25Index, excerpt, focus_source, page_sources, summary_documents, named_question_documents, exercise_sources, is_exercise_question
 from .question_images import MAX_IMAGE_BYTES, normalize_image, local_ocr, read_question
 from .document_images import ensure_image_text
 from urllib.parse import quote
@@ -617,6 +617,16 @@ async def _ask(payload: AskRequest, exchange_id: str) -> dict[str, Any]:
             document_names,
             settings,
         )
+        named_scope = named_question_documents(question, selected_documents) if not references else None
+        if named_scope is not None and document_ids:
+            if not named_scope:
+                raise HTTPException(status_code=400, detail='你提到的课件不在当前勾选的来源中，请先勾选该课件。')
+            selected_documents = named_scope
+            document_ids = {doc['id'] for doc in selected_documents}
+            document_names = [doc['name'] for doc in selected_documents]
+            analysis['needs_retrieval'] = True
+            if is_exercise_question(question):
+                analysis['intent'] = 'question'
         if (images or reply_to or references) and document_ids:
             analysis["needs_retrieval"] = True
         if analysis["intent"] == "summary":
@@ -646,35 +656,41 @@ async def _ask(payload: AskRequest, exchange_id: str) -> dict[str, Any]:
                                            activity=source_activity(contexts))
             else:
                 unread = await _ensure_source_images(selected_documents, settings, exchange_id)
-                combined_query = " ".join(dict.fromkeys([analysis["search_query"], *analysis["keywords"]]))
-                if images:
-                    # Diagram identifiers are task conditions, not retrieval concepts.
-                    combined_query = re.sub(r"\b[A-Za-z]\d+\b", " ", combined_query)
-                retrieval_query = combined_query
-                db.set_generation_progress(exchange_id, 'retrieval', '检索资料',
-                                           f'正在 {len(selected_documents)} 份勾选来源中查找相关内容。',
-                                           activity=source_activity(selected_documents, combined_query))
-                results = _index().search(
-                    combined_query,
-                    top_k=min(20, top_k * 3),
-                    document_ids=document_ids,
-                )
-                if not results and combined_query != effective_question:
-                    retrieval_query = ''  # Do not expose the full conversational prompt as search keywords.
-                    db.set_generation_progress(exchange_id, 'retrieval', '补充检索',
-                                               '关键词未命中，正在结合本次问题与上下文补充查找。',
-                                               activity=source_activity(selected_documents))
+                problems = exercise_sources(question, _summary_contexts([doc['id'] for doc in selected_documents])) if named_scope and is_exercise_question(question) else []
+                if problems:
+                    contexts = [{**context, 'index': index} for index, context in enumerate(problems, 1)]
+                    db.set_generation_progress(exchange_id, 'retrieval', '读取习题',
+                                               f'在指定课件中找到 {len(contexts)} 个带题目或例题标记的页面，正在读取完整题干。',
+                                               activity=source_activity(contexts))
+                else:
+                    combined_query = " ".join(dict.fromkeys([analysis["search_query"], *analysis["keywords"]]))
+                    if images:
+                        # Diagram identifiers are task conditions, not retrieval concepts.
+                        combined_query = re.sub(r"\b[A-Za-z]\d+\b", " ", combined_query)
+                    retrieval_query = combined_query
+                    db.set_generation_progress(exchange_id, 'retrieval', '检索资料',
+                                               f'正在 {len(selected_documents)} 份勾选来源中查找相关内容。',
+                                               activity=source_activity(selected_documents, combined_query))
                     results = _index().search(
-                        effective_question,
+                        combined_query,
                         top_k=min(20, top_k * 3),
                         document_ids=document_ids,
                     )
-                candidates = _contexts_for_results(results)
-                db.set_generation_progress(exchange_id, 'evidence', '核对候选原文',
-                                           f'找到 {len(candidates)} 个候选片段，正在核对下列资料中的原文。' if candidates else '未找到匹配片段，正在检查是否有可用依据。',
-                                           activity=source_activity(candidates, retrieval_query))
-                contexts = await select_evidence(effective_question, candidates, settings, top_k)
-
+                    if not results and combined_query != effective_question:
+                        retrieval_query = ''  # Do not expose the full conversational prompt as search keywords.
+                        db.set_generation_progress(exchange_id, 'retrieval', '补充检索',
+                                                   '关键词未命中，正在结合本次问题与上下文补充查找。',
+                                                   activity=source_activity(selected_documents))
+                        results = _index().search(
+                            effective_question,
+                            top_k=min(20, top_k * 3),
+                            document_ids=document_ids,
+                        )
+                    candidates = _contexts_for_results(results)
+                    db.set_generation_progress(exchange_id, 'evidence', '核对候选原文',
+                                               f'找到 {len(candidates)} 个候选片段，正在核对下列资料中的原文。' if candidates else '未找到匹配片段，正在检查是否有可用依据。',
+                                               activity=source_activity(candidates, retrieval_query))
+                    contexts = await select_evidence(effective_question, candidates, settings, top_k)
         retrieval_hits = len(contexts)
         coverage = summary_coverage(contexts) if analysis["intent"] == "summary" else None
         if coverage is not None:
