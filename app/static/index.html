@@ -55,7 +55,15 @@
     </svg>
 
     <div class="app-shell">
-      <aside class="sidebar">
+      <nav id="study-rail" class="study-rail" aria-label="阅读做题工具" hidden>
+        <button id="study-exit" class="study-home" type="button" title="返回完整工作区">智</button>
+        <button id="study-show-library" type="button" aria-expanded="false" aria-controls="library-pane">资料</button>
+        <button id="study-show-chat" type="button" aria-expanded="false" aria-controls="conversation-pane">对话</button>
+        <button id="study-show-apps" type="button" aria-expanded="false" aria-controls="library-pane">应用</button>
+      </nav>
+      <button id="study-drawer-backdrop" class="study-drawer-backdrop" type="button" aria-label="关闭临时面板" tabindex="-1" hidden></button>
+      <aside id="library-pane" class="sidebar">
+        <button id="study-close-library" class="icon-button study-drawer-close" type="button" aria-label="收起资料面板">×</button>
         <div class="brand">
           <div class="brand-mark">智</div>
           <div>
@@ -140,7 +148,8 @@
           <button class="mobile-tab" data-pane="viewer" aria-pressed="false" type="button">原文</button>
         </nav>
 
-        <section class="chat-pane">
+        <section id="conversation-pane" class="chat-pane">
+          <button id="study-close-chat" class="icon-button study-drawer-close" type="button" aria-label="收起对话面板">×</button>
           <header class="chat-heading"><strong id="notebook-title">我的课程</strong><div class="chat-actions"><span id="selection-status">正在加载来源</span><button id="undo-chat-delete" type="button" class="button ghost" disabled title="恢复最近删除的问答，最多保留 5 条">撤销删除</button><button id="clear-chat" type="button" class="button ghost">清空对话</button></div></header>
           <div id="messages" class="messages">
             <div id="empty-chat" class="empty-chat">
@@ -181,7 +190,7 @@
         <div id="workspace-resizer" class="panel-resizer" role="separator" tabindex="0" aria-orientation="vertical" aria-label="调整问答与原文宽度" title="拖动调整问答与原文宽度，双击恢复默认"></div>
         <section class="viewer-pane">
           <div id="right-pane-tabs" class="right-pane-tabs" hidden>
-            <strong>资料对照 <span>原文与测验同时显示</span></strong>
+            <strong>阅读做题 <span>原文与测验同时显示</span></strong>
             <button id="close-quiz-panel" type="button" class="icon-button compact" aria-label="收起测验" title="收起测验，进度自动保留">×</button>
           </div>
           <div id="viewer-document" class="viewer-document">

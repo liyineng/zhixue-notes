@@ -13,7 +13,7 @@ export function initializePanelResize(onResize = () => {}) {
   const defaults = { sidebar: 276, ratio: .5, studyRatio: .34, documentRatio: .48, documentVerticalRatio: .42 };
   const layout = Object.fromEntries(Object.entries(defaults).map(([name, value]) => [name, Number.isFinite(saved[name]) ? saved[name] : value]));
   const studying = () => viewer.classList.contains('study-open');
-  const horizontal = () => innerWidth >= 1280;
+  const horizontal = () => shell.classList.contains('study-focus') ? viewer.clientWidth >= 820 : innerWidth >= 1280;
   const field = kind => kind === 'study' ? (horizontal() ? 'documentRatio' : 'documentVerticalRatio') : kind === 'ratio' && studying() ? 'studyRatio' : kind;
   const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
   let timer;
@@ -37,6 +37,7 @@ export function initializePanelResize(onResize = () => {}) {
     split.setAttribute('aria-valuenow', String(Math.round(ratio * 100)));
     split.setAttribute('aria-valuetext', `问答栏 ${Math.round(ratio * 100)}%`);
     if (studySplit && studying()) {
+      viewer.dataset.studyLayout = horizontal() ? 'columns' : 'rows';
       const bar = document.getElementById('right-pane-tabs').getBoundingClientRect().height;
       const size = Math.max(1, (horizontal() ? viewer.clientWidth : viewer.clientHeight - bar) - 8);
       const min = Math.min(.5, (horizontal() ? 280 : 100) / size);

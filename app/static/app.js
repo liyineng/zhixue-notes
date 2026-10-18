@@ -411,6 +411,7 @@ function resetViewer() {
 }
 
 async function openDocument(doc) {
+  closeStudyDrawers();
   updateStudyLayout();
   if (["pdf", "pptx"].includes(doc.kind)) {
     setMobilePane("viewer");
@@ -1148,6 +1149,7 @@ function plainSourceText(citation) {
 }
 
 function showCitation(citation, messageId, citationIndex) {
+  closeStudyDrawers();
   updateStudyLayout();
   if (!["pdf", "pptx"].includes(citation.document_kind)) resetViewer();
   state.activeCitation = Number(citationIndex);
@@ -1320,6 +1322,9 @@ function renderApplications() {
 
 function updateStudyLayout() {
   const quiz = Boolean(state.activeQuiz);
+  document.querySelector('.app-shell').classList.toggle('study-focus', quiz);
+  document.getElementById('study-rail').hidden = !quiz;
+  if (!quiz) closeStudyDrawers();
   document.querySelector('.viewer-pane').classList.toggle('study-open', quiz);
   document.getElementById('viewer-document').hidden = false;
   document.getElementById('quiz-workspace').hidden = !quiz;
@@ -1340,6 +1345,9 @@ function closeQuizPanel(forget = true) {
     document.getElementById('right-pane-tabs').hidden = true;
     document.getElementById('quiz-workspace').hidden = true;
     document.getElementById('viewer-document').hidden = false;
+    document.querySelector('.app-shell').classList.remove('study-focus');
+    document.getElementById('study-rail').hidden = true;
+    closeStudyDrawers();
     document.getElementById('study-resizer').hidden = true;
     document.querySelector('.viewer-pane').classList.remove('study-open');
     dom.workspace.dispatchEvent(new Event('panelschange'));
@@ -1352,6 +1360,7 @@ function closeQuizPanel(forget = true) {
 }
 
 async function openQuizPanel(exchange, restore = false) {
+  closeStudyDrawers();
   if (state.activeQuiz?.id === exchange.id && !restore) {
     updateStudyLayout(); setMobilePane('viewer'); return;
   }
@@ -1400,6 +1409,28 @@ async function openQuizPanel(exchange, restore = false) {
   }
 }
 document.getElementById('close-quiz-panel').addEventListener('click', () => { closeQuizPanel(); if (innerWidth <= 1080) setMobilePane('chat'); });
+
+function closeStudyDrawers() {
+  const shell = document.querySelector('.app-shell');
+  shell.classList.remove('show-study-library', 'show-study-chat');
+  document.getElementById('study-drawer-backdrop').hidden = true;
+  for (const id of ['study-show-library', 'study-show-chat', 'study-show-apps']) document.getElementById(id).setAttribute('aria-expanded', 'false');
+}
+function toggleStudyDrawer(kind, trigger) {
+  const shell = document.querySelector('.app-shell');
+  const open = !shell.classList.contains(`show-study-${kind}`);
+  closeStudyDrawers();
+  if (!open) return;
+  shell.classList.add(`show-study-${kind}`);
+  document.getElementById('study-drawer-backdrop').hidden = false;
+  document.getElementById(trigger || (kind === 'chat' ? 'study-show-chat' : 'study-show-library')).setAttribute('aria-expanded', 'true');
+}
+document.getElementById('study-show-library').addEventListener('click', () => { setLibraryTab('sources'); toggleStudyDrawer('library'); });
+document.getElementById('study-show-chat').addEventListener('click', () => toggleStudyDrawer('chat'));
+document.getElementById('study-show-apps').addEventListener('click', () => { setLibraryTab('applications'); toggleStudyDrawer('library', 'study-show-apps'); });
+for (const id of ['study-close-library', 'study-close-chat', 'study-drawer-backdrop']) document.getElementById(id).addEventListener('click', closeStudyDrawers);
+document.getElementById('study-exit').addEventListener('click', () => { closeQuizPanel(); if (innerWidth <= 1080) setMobilePane('chat'); });
+document.addEventListener('keydown', event => { if (event.key === 'Escape' && !document.querySelector('dialog[open]')) closeStudyDrawers(); });
 
 async function generateQuiz(configuration) {
   if (state.busy) return;

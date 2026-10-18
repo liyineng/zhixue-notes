@@ -134,15 +134,23 @@ try {
   assert.equal(await conversation.getAttribute('data-preserved'), 'yes');
   assert.equal(await conversation.locator('details').first().evaluate(element => element.open), true);
   assert.equal(await page.locator('#question-input').inputValue(), '还没有发送的追问');
+  assert.equal(await page.locator('.chat-pane').isVisible(), false);
+  assert.equal(await page.locator('.sidebar').isVisible(), false);
+  await page.locator('#study-show-chat').click();
   assert.equal(await page.locator('.chat-pane').isVisible(), true);
-  assert.equal(await page.locator('.sidebar').isVisible(), true);
+  assert.equal(await page.locator('#question-input').inputValue(), '还没有发送的追问');
   await page.locator('#question-input').fill('');
+  await page.locator('#study-close-chat').click();
+  await page.locator('#study-show-library').click();
+  assert.equal(await page.locator('.sidebar').isVisible(), true);
+  await page.locator('#study-close-library').click();
   assert.equal(await page.locator('#viewer-document').isVisible(), true);
   assert.equal(await page.locator('#quiz-workspace').isVisible(), true);
   await page.locator('#viewer-scroll').waitFor({ state: 'visible' });
   const original = await page.locator('#viewer-document').boundingBox();
   const practice = await page.locator('#quiz-workspace').boundingBox();
   assert(original.x + original.width <= practice.x + 2);
+  assert(original.width >= 500 && practice.width >= 500);
   const studyHandle = await page.locator('#study-resizer').boundingBox();
   await page.mouse.move(studyHandle.x + 4, studyHandle.y + 80); await page.mouse.down();
   await page.mouse.move(studyHandle.x + 24, studyHandle.y + 80); await page.mouse.up();
@@ -172,11 +180,12 @@ try {
     await page.setViewportSize({ width, height: 900 });
     const reading = await page.locator('#viewer-document').boundingBox();
     const solving = await page.locator('#quiz-workspace').boundingBox();
-    assert(reading.height >= 100 && solving.height >= 150);
-    assert(reading.y + reading.height <= solving.y + 2);
+    assert(reading.width >= 360 && solving.width >= 360);
+    assert(reading.x + reading.width <= solving.x + 2);
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
   }
   await page.setViewportSize({ width: 390, height: 844 });
+  await page.waitForFunction(() => document.querySelector('.viewer-pane').dataset.studyLayout === 'rows');
   assert.equal(await page.locator('#viewer-document').isVisible(), true);
   assert.equal(await page.locator('#quiz-workspace').isVisible(), true);
   const mobileOriginal = await page.locator('#viewer-document').boundingBox();
@@ -194,6 +203,7 @@ try {
   assert.match(await page.locator('.quiz-question-number').innerText(), /第 1/);
   await page.locator('#close-quiz-panel').click();
   await page.locator('[data-pane="sources"]').click();
+  await page.locator('#applications-tab').click();
   await page.locator('.application-card').waitFor();
   assert.match(await page.locator('.application-status').innerText(), /已答 0/);
   assert.equal(await page.locator('#sidebar-resizer').isVisible(), false);
@@ -219,7 +229,7 @@ try {
   console.log(JSON.stringify({ passed: true, settings: true, selectedSourcesOnly: true, grading: true, citations: true,
     persistedAfterReload: true, reset: true, math: true, summary: true, mobile: true, applicationLibrary: true,
     embeddedQuizPanel: true, simultaneousOriginalAndQuiz: true, responsiveStudyLayout: true,
-    conversationPreserved: true, draggableColumns: true, layoutPersistence: true, applicationDeleteUndo: true }));
+    focusReadingLayout: true, contextDrawers: true, conversationPreserved: true, draggableColumns: true, layoutPersistence: true, applicationDeleteUndo: true }));
 } catch (error) {
   await page.screenshot({ path: path.join(output, 'failure.png') });
   console.error(JSON.stringify({ errors, url: page.url() }));
