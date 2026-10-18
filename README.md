@@ -2,6 +2,14 @@
 
 源码与更新保存在公开仓库：[liyineng/zhixue-notes](https://github.com/liyineng/zhixue-notes)。
 
+## 下载发行版
+
+在 [GitHub Releases](https://github.com/liyineng/zhixue-notes/releases/latest) 下载 `zhixue-notes-v0.3.0.zip`。这是干净的程序包，不包含作者的对话、笔记、课程资料、数据库、模型设置或 API 密钥。首次启动创建空白工作区，iCloud 同步默认关闭。
+
+需要先安装 **Python 3.11 或更新版本**；解压后在终端进入文件夹，运行 `bash run.sh`，再打开 `http://127.0.0.1:8765`。首次运行会联网安装依赖，模型接口需自行配置。此 ZIP 包含 Python 程序与网页资源，没有内置 Python，也不是 macOS `.app` 安装包。默认本机 OCR 另需 Tesseract 和中文/英文语言包；也可配置视觉模型。
+
+更新已有安装前，请先备份原来的 `data/`，不要删除或覆盖其中的资料。新用户无需复制任何 `data/` 文件。
+
 模型可插拔的课程资料学习助手。第一版已经可以本机运行，完成以下闭环：
 
 1. 上传 PDF、PPTX、DOCX、Markdown 或 TXT 资料。
@@ -166,6 +174,8 @@ PDF 中缺少可用文字层、以图片为主体的页面会自动补充识别�
 - 本应用默认仅监听本机地址，尚未实现多用户身份认证，不适合直接对公网开放。
 
 ## 验证
+
+发行包通过 `python3 scripts/build-release.py --version 0.3.0` 从指定 Git 提交生成，只包含固定清单中的程序、说明与启动文件，输出到忽略的 `artifacts/releases/`。不会读取或打包本地 `data/`、环境、附件及密钥文件。
 
 ```bash
 .venv/bin/python -m unittest discover -s tests -v

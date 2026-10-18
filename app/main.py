@@ -91,7 +91,7 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(
     title="智学笔记 API",
-    version="0.2.0",
+    version="0.3.0",
     lifespan=lifespan,
 )
 
