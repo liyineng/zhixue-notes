@@ -389,6 +389,21 @@ def finish_pending_exchange(exchange_id: str, result: dict[str, Any], *, error: 
         return cursor.rowcount > 0
 
 
+def set_generation_progress(exchange_id: str, stage: str, label: str, detail: str) -> None:
+    with connection() as conn:
+        row = conn.execute("SELECT result_json FROM chat_exchanges WHERE id=? AND status='pending'", (exchange_id,)).fetchone()
+        if row is None:
+            return
+        result = json.loads(row['result_json'])
+        progress = result.setdefault('progress', {'steps': []})
+        steps = progress['steps']
+        if not steps or steps[-1]['stage'] != stage:
+            steps.append({'stage': stage, 'label': label})
+        progress['detail'] = detail
+        conn.execute("UPDATE chat_exchanges SET result_json=? WHERE id=? AND status='pending'",
+                     (json.dumps(result, ensure_ascii=False), exchange_id))
+
+
 def get_exchange(notebook_id: str, exchange_id: str) -> dict[str, Any] | None:
     with connection() as conn:
         row = conn.execute("SELECT * FROM chat_exchanges WHERE notebook_id=? AND id=? AND deleted_at IS NULL",

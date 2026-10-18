@@ -596,7 +596,7 @@ function addMessage(role, text, options = {}) {
     const body = document.createElement("div");
     body.className = "message-body";
     if (options.loading) {
-      body.innerHTML = '<span class="loading-dots">正在检索和生成</span>';
+      body.innerHTML = '<div class="generation-progress" role="status" aria-live="polite"><div class="loading-dots">正在提交请求</div></div>';
     } else if (role === "assistant") {
       body.innerHTML = renderAnswerHtml(text);
     } else {
@@ -719,14 +719,63 @@ function updateCancelButton() {
   dom.sendButton.hidden = active;
 }
 
-function startGeneration(question) {
+function renderGenerationProgress(messageId, progress, createdAt) {
+  const body = dom.messages.querySelector(`[data-message-id="${messageId}"] .message-body`);
+  if (!body?.querySelector('.generation-progress')) return;
+  const panel = document.createElement('div');
+  panel.className = 'generation-progress';
+  panel.setAttribute('role', 'status');
+  panel.setAttribute('aria-live', 'polite');
+  const steps = progress?.steps || [];
+  const list = document.createElement('ol');
+  list.className = 'generation-steps';
+  for (const [index, step] of steps.entries()) {
+    const item = document.createElement('li');
+    const current = index === steps.length - 1;
+    item.className = current ? 'current' : 'completed';
+    if (current) item.setAttribute('aria-current', 'step');
+    item.textContent = step.label;
+    list.append(item);
+  }
+  if (steps.length) panel.append(list);
+  const detail = document.createElement('div');
+  detail.className = 'generation-detail';
+  detail.textContent = progress?.detail || '请求已接收，等待开始处理。';
+  panel.append(detail);
+  const elapsed = Math.max(0, Math.floor((Date.now() - Date.parse(createdAt)) / 1000));
+  if (Number.isFinite(elapsed)) {
+    const timing = document.createElement('div');
+    timing.className = 'generation-timing';
+    timing.textContent = `已等待 ${elapsed} 秒${elapsed >= 30 ? ' · 当前步骤仍在处理，可继续等待或取消生成。' : ''}`;
+    panel.append(timing);
+  }
+  body.replaceChildren(panel);
+}
+
+async function pollGenerationProgress(job) {
+  try {
+    const data = await api(`/api/notebooks/${encodeURIComponent(job.notebookId)}/chat/${encodeURIComponent(job.id)}/status`,
+      { signal: AbortSignal.timeout(5000) });
+    if (state.activeGeneration !== job || job.finished || job.cancelled) return;
+    if (data.status === 'pending') renderGenerationProgress(job.messageId, data.progress, data.created_at);
+  } catch (_) { /* Submission may not yet exist; transient polling failures do not fail generation. */ }
+  if (state.activeGeneration === job && !job.finished && !job.cancelled) {
+    job.progressTimer = window.setTimeout(() => pollGenerationProgress(job), 1000);
+  }
+}
+
+function startGeneration(question, messageId) {
   const job = { id: crypto.randomUUID(), notebookId: state.notebookId, controller: new AbortController(), question, cancelled: false };
+  job.messageId = messageId;
   state.activeGeneration = job;
+  job.progressTimer = window.setTimeout(() => pollGenerationProgress(job), 300);
   updateCancelButton();
   return job;
 }
 
 function finishGeneration(job) {
+  job.finished = true;
+  window.clearTimeout(job.progressTimer);
   if (state.activeGeneration === job) state.activeGeneration = null;
   setBusy(state.chatPending);
 }
@@ -899,7 +948,7 @@ async function askQuestion(question) {
   const replyTo = state.replyTo;
   const userId = addMessage("user", text || "请解答图片中的题目，并结合选中的课程资料。", { images, replyTo });
   const assistantId = addMessage("assistant", "", { loading: true });
-  const job = startGeneration(text);
+  const job = startGeneration(text, assistantId);
   setBusy(true);
   try {
     const data = await api("/api/ask", {
@@ -1070,7 +1119,7 @@ async function generateSummary() {
   setBusy(true);
   const userId = addMessage("user", "根据当前选中的来源生成一份复习提纲。");
   const assistantId = addMessage("assistant", "", { loading: true });
-  const job = startGeneration('根据当前选中的来源生成一份复习提纲。');
+  const job = startGeneration('根据当前选中的来源生成一份复习提纲。', assistantId);
   updateCancelButton();
   try {
     const data = await api("/api/summary", {
@@ -1227,6 +1276,8 @@ async function loadChat(polling = false) {
     } else if (exchange.status === "error") {
       if (exchange.result.cancelled) setAssistantCancelled(id);
       else setAssistantError(id, new Error(exchange.result.detail || "上次请求未完成，请重新提问。"));
+    } else {
+      renderGenerationProgress(id, exchange.result.progress, exchange.created_at);
     }
     bindExchange(id, `user-${exchange.id}`, exchange.id, exchange.status === "pending");
   }

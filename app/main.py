@@ -578,6 +578,8 @@ async def _ask(payload: AskRequest, exchange_id: str) -> dict[str, Any]:
     db.start_exchange(exchange_id, payload.notebook_id or "default", question, [_public_image(image) for image in images], reply_to)
 
     try:
+        db.set_generation_progress(exchange_id, 'question', '识别题目图片' if images else '分析问题',
+                                   '正在读取题干与图片中的已知条件。' if images else '正在理解问题和近期对话。')
         image_text, image_mode = await read_question(images, settings, payload.image_text) if images else ("", "")
         effective_question = question
         if history:
@@ -592,6 +594,7 @@ async def _ask(payload: AskRequest, exchange_id: str) -> dict[str, Any]:
                                   f"原回答：\n{previous}\n\n请针对本次追问解释；资料依据必须重新从本次提供的资料片段中取得。")
         if image_text:
             effective_question += "\n\n题目图片的识别内容（不确定处请指出，不要猜测缺失条件）：\n" + image_text
+        db.set_generation_progress(exchange_id, 'analysis', '规划检索', '正在判断是否需要资料，并提炼检索关键词。')
         analysis = await analyze_question(
             effective_question,
             document_names,
@@ -604,15 +607,18 @@ async def _ask(payload: AskRequest, exchange_id: str) -> dict[str, Any]:
         contexts: list[dict[str, Any]] = []
         unread = []
         if analysis["needs_retrieval"] and document_ids:
+            db.set_generation_progress(exchange_id, 'sources', '检查资料', f'正在检查已选的 {len(selected_documents)} 份资料及图片页识别结果。')
             if analysis["intent"] == "summary":
                 selected_documents = summary_documents(question, selected_documents)
                 if not selected_documents:
                     raise HTTPException(status_code=400, detail="你提到的课件不在当前勾选的来源中，请先勾选该课件。")
                 document_names = [document["name"] for document in selected_documents]
                 unread = await _ensure_source_images(selected_documents, settings)
+                db.set_generation_progress(exchange_id, 'retrieval', '读取课件内容', f'正在整理 {len(selected_documents)} 份课件的完整页面。')
                 contexts = _summary_contexts([document["id"] for document in selected_documents])
             else:
                 unread = await _ensure_source_images(selected_documents, settings)
+                db.set_generation_progress(exchange_id, 'retrieval', '检索资料', '正在当前勾选的来源中查找相关片段。')
                 combined_query = " ".join(dict.fromkeys([analysis["search_query"], *analysis["keywords"]]))
                 if images:
                     # Diagram identifiers are task conditions, not retrieval concepts.
@@ -628,6 +634,7 @@ async def _ask(payload: AskRequest, exchange_id: str) -> dict[str, Any]:
                         top_k=min(20, top_k * 3),
                         document_ids=document_ids,
                     )
+                db.set_generation_progress(exchange_id, 'evidence', '筛选依据', f'检索到 {len(results)} 个候选片段，正在核对与问题直接相关的原文。')
                 contexts = await select_evidence(effective_question, _contexts_for_results(results), settings, top_k)
 
         retrieval_hits = len(contexts)
@@ -636,6 +643,8 @@ async def _ask(payload: AskRequest, exchange_id: str) -> dict[str, Any]:
             coverage['unread_image_pages'] = unread
         if unread:
             effective_question += f"\n资料解析状态：{unread}。这些页面含图片但识别失败，不是未提供页面，不要猜测图片内容。"
+        db.set_generation_progress(exchange_id, 'answer', '生成回答',
+                                   f'已整理 {len(contexts)} 处资料依据，正在组织回答与引用。' if contexts else '正在生成回答；本次没有可引用的资料依据。')
         if analysis["intent"] == "summary":
             answer = await make_summary(contexts, settings, question=effective_question)
         else:
@@ -695,7 +704,9 @@ async def _summary(payload: SummaryRequest, exchange_id: str) -> dict[str, Any]:
         question += f"复习重点：{payload.focus}"
     db.start_exchange(exchange_id, payload.notebook_id or "default", question)
     try:
+        db.set_generation_progress(exchange_id, 'sources', '检查资料', f'正在检查 {len(selected)} 份资料及图片页识别结果。')
         unread = await _ensure_source_images(selected, settings)
+        db.set_generation_progress(exchange_id, 'retrieval', '读取课件内容', '正在汇总选中课件的完整页面。')
         contexts = _summary_contexts([doc["id"] for doc in selected])
         if not contexts:
             raise HTTPException(status_code=400, detail="资料尚未解析出可整理的文字，请检查图片识别状态。")
@@ -703,6 +714,7 @@ async def _summary(payload: SummaryRequest, exchange_id: str) -> dict[str, Any]:
         coverage['unread_image_pages'] = unread
         if unread:
             question += f"\n资料解析状态：{unread}。这些页含图片但识别失败，不是未提供页面，不要猜测图片内容。"
+        db.set_generation_progress(exchange_id, 'answer', '生成复习提纲', f'已读取 {len(contexts)} 个资料片段，正在组织提纲与引用。')
         answer = await make_summary(contexts, settings, question=question)
         answer, contexts = cited_sources(answer, contexts)
     except Exception as exc:
@@ -733,6 +745,16 @@ async def cancel_generation(notebook_id: str, exchange_id: str) -> dict[str, Any
 def chat_history(notebook_id: str) -> dict[str, Any]:
     _notebook(notebook_id)
     return {"exchanges": db.list_exchanges(notebook_id), "deleted_count": db.deleted_exchange_count(notebook_id)}
+
+
+@app.get('/api/notebooks/{notebook_id}/chat/{exchange_id}/status')
+def generation_status(notebook_id: str, exchange_id: str) -> dict[str, Any]:
+    _notebook(notebook_id)
+    exchange = db.get_exchange(notebook_id, exchange_id)
+    if not exchange:
+        raise HTTPException(status_code=404, detail='请求不存在或不属于当前笔记本。')
+    return {'status': exchange['status'], 'progress': exchange['result'].get('progress'),
+            'created_at': exchange['created_at']}
 
 
 @app.delete("/api/notebooks/{notebook_id}/chat")
