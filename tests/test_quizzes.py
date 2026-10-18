@@ -128,3 +128,24 @@ class QuizTests(unittest.TestCase):
         self.assertEqual(remap_references('`x[22]` [22]', {22: 2}), '`x[22]` [2]')
         with self.assertRaises(ValueError):
             validate_questions({'questions': [question(22)]}, contexts[:1], 1)
+
+    def test_unescaped_math_json_retries_same_batch_with_structured_mode(self):
+        contexts = [{'index': 1, 'document_id': 'selected', 'document_name': '第二章', 'page': 1, 'text': '谐振公式'}]
+        invalid = r'{"questions":[{"prompt":"计算 \(Q\)","options":["a","b","c","d"],"answer":0,"explanation":"说明","sources":[1]}]}'
+        valid = question()
+        valid['prompt'] = r'计算 \(Q\)'
+        valid['explanation'] = r'\(Q=\frac{\omega_0 L}{R}\) [1]'
+        completion = AsyncMock(side_effect=[invalid, json.dumps({'questions': [valid]})])
+        with patch('app.quizzes.chat_completion', completion):
+            result = asyncio.run(build_quiz(contexts, {'base_url': 'mock', 'model': 'mock'}, count='less',
+                difficulty='medium', language='zh-CN', topic='', on_batch=AsyncMock()))
+        self.assertEqual(completion.await_count, 2)
+        self.assertTrue(all(c.kwargs['json_mode'] for c in completion.call_args_list))
+        self.assertEqual(result['questions'][0]['explanation'], valid['explanation'])
+        self.assertEqual(result['questions'][0]['sources'], [1])
+
+    def test_valid_json_with_corrupted_latex_control_characters_is_rejected(self):
+        item = question()
+        item['explanation'] = '\\(\x0crac{1}{2}\\)'
+        with self.assertRaisesRegex(ValueError, '转义错误'):
+            validate_questions({'questions': [item]}, [{'index': 1}], 1)

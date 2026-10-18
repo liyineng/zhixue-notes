@@ -40,7 +40,7 @@ class CompletionTests(unittest.TestCase):
                         model='mock', messages=[], temperature=0, max_tokens=100))
             self.assertEqual(len(attempts), expected)
 
-    def call(self, replies, *, base_url='https://api.deepseek.com', thinking=None):
+    def call(self, replies, *, base_url='https://api.deepseek.com', thinking=None, json_mode=False):
         requests = []
 
         def handle(request):
@@ -51,7 +51,7 @@ class CompletionTests(unittest.TestCase):
         with patch('app.llm.httpx.AsyncClient', return_value=client):
             result = asyncio.run(chat_completion(base_url=base_url, api_key='test-key',
                 model='deepseek-flash', messages=[{'role': 'user', 'content': '题目'}],
-                temperature=0, max_tokens=2600, thinking=thinking))
+                temperature=0, max_tokens=2600, thinking=thinking, json_mode=json_mode))
         return result, requests
 
     def reply(self, content, finish='stop'):
@@ -88,6 +88,14 @@ class CompletionTests(unittest.TestCase):
         result, requests = self.call([self.reply('正常正文')], base_url='https://other.example/v1', thinking=False)
         self.assertEqual(result, '正常正文')
         self.assertNotIn('thinking', requests[0])
+
+    def test_quiz_json_mode_is_opt_in_and_only_sent_to_supported_provider(self):
+        _, structured = self.call([self.reply('{"questions":[]}')], thinking=False, json_mode=True)
+        self.assertEqual(structured[0]['response_format'], {'type': 'json_object'})
+        _, ordinary = self.call([self.reply('普通回答')])
+        self.assertNotIn('response_format', ordinary[0])
+        _, other = self.call([self.reply('{"questions":[]}')], base_url='https://other.example/v1', json_mode=True)
+        self.assertNotIn('response_format', other[0])
 
 
 if __name__ == '__main__':

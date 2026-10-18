@@ -201,6 +201,7 @@ async def chat_completion(
     temperature: float,
     max_tokens: int,
     thinking: bool | None = None,
+    json_mode: bool = False,
 ) -> str:
     headers = {"Content-Type": "application/json"}
     if api_key.strip():
@@ -212,6 +213,8 @@ async def chat_completion(
         "max_tokens": max_tokens,
     }
     deepseek = urlparse(base_url).hostname == "api.deepseek.com"
+    if json_mode and deepseek:
+        payload['response_format'] = {'type': 'json_object'}
     if deepseek and thinking is not None:
         payload["thinking"] = {"type": "enabled" if thinking else "disabled"}
         if thinking:
