@@ -1,4 +1,4 @@
-# 智学笔记 · Mac 版 v0.3.1
+# 智学笔记 · Mac 版 v0.3.2
 
 1. 先安装 Python 3.11 或更新版本：https://www.python.org/downloads/macos/
 2. 完整解压 ZIP。双击 `start.command`，首次运行会联网安装依赖，之后自动打开浏览器。

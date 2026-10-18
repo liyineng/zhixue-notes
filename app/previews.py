@@ -103,3 +103,19 @@ def presentation_pdf(document: dict) -> Path:
                 raise PreviewError('转换后的课件页数不完整，未使用此预览。请下载原文件查看，或另存为 PDF 后上传。')
             os.replace(converted, target)
     return target
+
+
+def presentation_page_lines(document: dict, page_number: int) -> list[dict]:
+    path = presentation_pdf(document)
+    with pymupdf.open(path) as pdf:
+        if not 1 <= page_number <= pdf.page_count:
+            raise PreviewError('课件页码超出范围。')
+        lines = []
+        for block in pdf[page_number - 1].get_text('dict').get('blocks', []):
+            if block.get('type') != 0:
+                continue
+            for line in block.get('lines', []):
+                text = ''.join(span.get('text', '') for span in line.get('spans', []))
+                if text.strip():
+                    lines.append({'page': page_number, 'text': text, 'bbox': list(line['bbox'])})
+        return lines

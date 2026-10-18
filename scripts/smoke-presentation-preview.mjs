@@ -28,11 +28,13 @@ await page.route('**/api/documents?*', route => route.fulfill({ json: { document
 await page.route('**/api/sync', route => route.fulfill({ json: { enabled: false, available: false, conflicts: [], revision: '', folder: '' } }));
 await page.route('**/api/notebooks/default/chat', route => route.fulfill({ json: { exchanges: [{
   id: 'preview-chat', question: 'Explain the second slide', status: 'complete', created_at: '2026-01-01', images: [], reply_to: {},
-  result: { answer: 'Slide two [1].', mode: 'model', source_mode: 'knowledge_base', citations: [{
-    index: 1, document_id: doc.id, document_name: doc.name, document_kind: 'pptx', page: 2, text: 'Second slide', lines: [{ page: 2, text: 'Second slide', bbox: null }],
-  }] },
+  result: { answer: 'Slide two [1] and [2], unmatched [3].', mode: 'model', source_mode: 'knowledge_base', citations: [{
+    index: 1, document_id: doc.id, document_name: doc.name, document_kind: 'pptx', page: 2, text: 'SLIDE TWO', lines: [{ page: 2, text: 'SLIDE TWO', bbox: null }],
+  }, { index: 2, document_id: doc.id, document_name: doc.name, document_kind: 'pptx', page: 2, text: 'SLIDE TWO', lines: [] },
+  { index: 3, document_id: doc.id, document_name: doc.name, document_kind: 'pptx', page: 2, text: 'Unmatched quote in citation', lines: [] }] },
 }], deleted_count: 0 } }));
 await page.route('**/api/documents/preview-fixture/chunks', route => route.fulfill({ json: { chunks: [{ page: 1, text: 'Extracted slide text', index: 1 }] } }));
+await page.route('**/api/documents/preview-fixture/preview-lines?*', route => route.fulfill({ json: { lines: [{ page: 2, text: 'SLIDE TWO', bbox: [60, 57, 260, 100] }] } }));
 await page.route('**/api/documents/preview-fixture/preview', async route => {
   if (delayed) await delayed;
   if (fail) await route.fulfill({ status: 503, json: { detail: 'PPT 原页预览需要安装 LibreOffice。' } });
@@ -50,7 +52,18 @@ try {
   await page.locator('#prev-page').click();
   await page.locator('.citation-ref').first().click();
   await page.waitForFunction(() => document.querySelector('#page-input').value === '2');
+  await page.locator('.highlight-box[data-citations="1,2"]').waitFor();
+  assert.equal(await page.locator('.highlight-box .highlight-label').count(), 2);
+  assert.match(await page.locator('.preview-location-note').innerText(), /\[3\]/);
+  assert.notEqual(await page.locator('.highlight-label').nth(0).evaluate(el => el.style.getPropertyValue('--citation-color')), await page.locator('.highlight-label').nth(1).evaluate(el => el.style.getPropertyValue('--citation-color')));
+  await page.locator('.citation-ref').nth(1).click();
+  await page.waitForFunction(() => document.querySelector('#highlight-legend .citation-ref[aria-label="查看引用 2"]').getAttribute('aria-pressed') === 'true');
   await page.screenshot({ path: path.join(output, 'preview.png') });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.locator('.highlight-box').first().waitFor();
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+  await page.screenshot({ path: path.join(output, 'highlights-mobile.png') });
+  await page.setViewportSize({ width: 1440, height: 960 });
   // Force a fresh load so a missing converter can be simulated independently.
   fail = true;
   await page.reload({ waitUntil: 'networkidle' });

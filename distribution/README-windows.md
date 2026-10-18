@@ -1,4 +1,4 @@
-# 智学笔记 · Windows 版 v0.3.1
+# 智学笔记 · Windows 版 v0.3.2
 
 1. 安装 Python 3.11 或更新版本：https://www.python.org/downloads/windows/ 。安装后确认命令 `py -3 --version` 或 `python --version` 能运行。
 2. 右键 ZIP → 全部解压。不要直接在压缩包里启动。

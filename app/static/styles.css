@@ -1069,3 +1069,5 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .sync-conflict .button { margin: 8px 8px 0 0; }
 .sync-preview { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 160px; overflow: auto; font: inherit; font-size: 13px; color: #52647a; }
 @media (max-width: 760px) { .sync-button { margin-bottom: 8px; padding: 6px 10px; } .sync-dialog { padding: 18px; } }
+.highlight-legend { flex-wrap: wrap; align-items: center; }
+.preview-location-note { color: var(--muted, #64748b); font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }

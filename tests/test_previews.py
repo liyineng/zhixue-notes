@@ -46,8 +46,8 @@ class PresentationPreviewTests(unittest.TestCase):
         self.assertIn('--headless', command)
         self.assertTrue(any(v.startswith('-env:UserInstallation=') for v in command))
         with pymupdf.open() as pdf:
-            pdf.new_page()
-            pdf.new_page()
+            pdf.new_page().insert_text((50, 70), 'First slide')
+            pdf.new_page().insert_text((50, 70), 'Second slide')
             pdf.save(work / (Path(command[-1]).stem + '.pdf'))
         return subprocess.CompletedProcess(command, 0)
 
@@ -61,6 +61,12 @@ class PresentationPreviewTests(unittest.TestCase):
                 with pymupdf.open(stream=response.content, filetype='pdf') as pdf:
                     self.assertEqual(pdf.page_count, 2)
             self.assertEqual(converter.call_count, 1)
+            lines = self.client.get('/api/documents/' + self.document['id'] + '/preview-lines?page=2')
+            self.assertEqual(lines.status_code, 200)
+            self.assertEqual(lines.json()['lines'][0]['text'], 'Second slide')
+            self.assertEqual(lines.json()['lines'][0]['page'], 2)
+            self.assertEqual(len(lines.json()['lines'][0]['bbox']), 4)
+            self.assertEqual(self.client.get('/api/documents/' + self.document['id'] + '/preview-lines?page=3').status_code, 400)
         self.assertEqual(Path(self.document['path']).read_bytes(), self.content)
         self.assertEqual(db.document_chunk_ids(self.document['id']), original_chunks)
         self.assertEqual(self.client.get('/api/documents/' + self.document['id'] + '/file').content, self.content)

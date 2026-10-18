@@ -1,5 +1,6 @@
 import { renderAnswerHtml, matchingSourceLines } from "/static/answer-format.js";
 import { initializeCloudSync } from '/static/cloud-sync.js';
+import { presentationHighlights } from '/static/presentation-highlights.js';
 import renderMathInElement from '/static/vendor/katex/contrib/auto-render.mjs';
 import * as pdfjsLib from "/static/vendor/pdfjs/pdf.mjs";
 
@@ -21,6 +22,8 @@ const state = {
   pdfLoadingTask: null,
   pdfDocumentId: null,
   viewerDocumentId: null,
+  previewCitations: [],
+  previewPageLines: new Map(),
   pdfPageCount: 0,
   pdfPage: 1,
   highlightLines: [],
@@ -377,6 +380,8 @@ function resetViewer() {
   state.pdfDocument = null;
   state.pdfDocumentId = null;
   state.viewerDocumentId = null;
+  state.previewCitations = [];
+  state.previewPageLines.clear();
   state.pdfPageCount = 0;
   state.pdfPage = 1;
   state.highlightLines = [];
@@ -433,7 +438,7 @@ async function openTextDocument(doc, errorMessage = '') {
   }
 }
 
-async function openPdf(documentId, pageNumber, lines = []) {
+async function openPdf(documentId, pageNumber, lines = [], references = []) {
   const generation = ++state.viewerGeneration;
   const doc = state.documents.find((item) => item.id === documentId);
   if (!doc) {
@@ -441,6 +446,7 @@ async function openPdf(documentId, pageNumber, lines = []) {
     return;
   }
   state.highlightLines = lines || [];
+  state.previewCitations = doc.kind === 'pptx' ? references : [];
   state.viewerDocumentId = documentId;
   dom.viewerName.textContent = doc.name;
   dom.viewerEmpty.hidden = doc.kind !== 'pptx';
@@ -458,6 +464,7 @@ async function openPdf(documentId, pageNumber, lines = []) {
       dom.canvas.height = 0;
       state.pdfLoadingTask?.destroy().catch(() => {});
       state.pdfDocument = null;
+      state.previewPageLines.clear();
       state.pdfDocumentId = documentId;
       let input = { url: `/api/documents/${documentId}/file` };
       if (doc.kind === 'pptx') {
@@ -546,11 +553,29 @@ async function renderPdfPage(pageNumber) {
   }
   if (generation !== state.renderGeneration) return;
   state.renderTask = null;
-  drawHighlights(viewport);
+  if (state.previewCitations.length) {
+    const documentId = state.pdfDocumentId;
+    let pageLines = state.previewPageLines.get(safePage);
+    let locationError = false;
+    if (!pageLines) {
+      try {
+        const data = await api(`/api/documents/${documentId}/preview-lines?page=${safePage}`);
+        if (generation !== state.renderGeneration || documentId !== state.pdfDocumentId) return;
+        pageLines = data.lines;
+        state.previewPageLines.set(safePage, pageLines);
+      } catch (_) {
+        if (generation !== state.renderGeneration) return;
+        pageLines = [];
+        locationError = true;
+      }
+    }
+    const references = state.previewCitations.filter(ref => Number(ref.page) === safePage);
+    drawHighlights(viewport, presentationHighlights(references, pageLines, safePage), references, locationError);
+  } else drawHighlights(viewport);
 }
 
-function drawHighlights(viewport) {
-  const lines = state.highlightLines.filter(
+function drawHighlights(viewport, mappedLines = null, pageReferences = null, locationError = false) {
+  const lines = (mappedLines || state.highlightLines).filter(
     (line) => Number(line.page) === Number(state.pdfPage) && Array.isArray(line.bbox)
   );
   const grouped = new Map();
@@ -590,7 +615,8 @@ function drawHighlights(viewport) {
     dom.highlightLayer.append(box);
   }
   ui["highlight-legend"].replaceChildren();
-  for (const index of [...new Set(lines.map((line) => line.citationIndex || state.activeCitation))].sort((a, b) => a - b)) {
+  const indices = pageReferences ? pageReferences.map(ref => Number(ref.index)) : lines.map(line => line.citationIndex || state.activeCitation);
+  for (const index of [...new Set(indices)].sort((a, b) => a - b)) {
     const button = document.createElement("button");
     button.type = "button";
     button.className = "citation-ref";
@@ -599,12 +625,19 @@ function drawHighlights(viewport) {
     button.setAttribute("aria-pressed", String(Number(index) === Number(state.activeCitation)));
     colorCitation(button, index);
     button.addEventListener("click", () => {
-      const citation = state.messageCitations.get(state.highlightMessageId)?.find((c) => c.index === index);
+      const citation = state.messageCitations.get(state.highlightMessageId)?.find((c) => Number(c.index) === Number(index)) || state.previewCitations.find(c => Number(c.index) === Number(index));
       if (citation) showCitation(citation, state.highlightMessageId, index);
     });
     ui["highlight-legend"].append(button);
   }
-  ui["highlight-legend"].hidden = !lines.length;
+  const missing = pageReferences?.filter(ref => !lines.some(line => Number(line.citationIndex) === Number(ref.index))) || [];
+  if (missing.length) {
+    const note = document.createElement('span');
+    note.className = 'preview-location-note';
+    note.textContent = locationError ? '文字标注暂不可用，可再次点击引用重试。' : `${missing.map(ref => `[${ref.index}]`).join('、')} 已定位到此页，未匹配到可精确标注的文字。`;
+    ui['highlight-legend'].append(note);
+  }
+  ui["highlight-legend"].hidden = !indices.length;
 }
 
 function scrollMessages() {
@@ -1123,7 +1156,8 @@ function showCitation(citation, messageId, citationIndex) {
     openPdf(
       citation.document_id,
       targetPage,
-      highlightLines
+      highlightLines,
+      references.filter(ref => ref.document_id === citation.document_id)
     );
   } else {
     ui["highlight-legend"].hidden = true;
