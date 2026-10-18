@@ -95,7 +95,13 @@ export function renderQuiz(container, result, { onAnswer, onReset, onCitation, c
     const nav = node('div', 'quiz-navigation');
     const previous = node('button', 'button ghost', '上一题'); previous.type = 'button'; previous.disabled = position === 0;
     const next = node('button', 'button secondary', '下一题'); next.type = 'button'; next.disabled = position === questions.length - 1;
-    const move = delta => { position += delta; localStorage.setItem(key, String(position)); draw(); container.scrollIntoView({ block: 'start', behavior: 'smooth' }); };
+    const move = delta => {
+      position += delta;
+      localStorage.setItem(key, String(position));
+      draw();
+      const behavior = window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth';
+      container.scrollIntoView({ block: 'start', behavior });
+    };
     previous.addEventListener('click', () => move(-1)); next.addEventListener('click', () => move(1));
     nav.append(previous, next);
     if (answered) {

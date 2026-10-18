@@ -84,6 +84,22 @@ try {
   await page.goto(base, { waitUntil: 'networkidle' });
   await page.locator('#summary-button').waitFor({ state: 'visible' });
   await page.waitForFunction(() => !document.querySelector('#summary-button').disabled);
+  // Resized chat columns must retain a readable notebook title and reachable actions.
+  for (const width of [320, 390, 820, 1180, 1920]) {
+    await page.setViewportSize({ width, height: 844 });
+    const heading = await page.locator('.chat-heading').boundingBox();
+    const title = await page.locator('#notebook-title').boundingBox();
+    assert(title.width >= 120, `notebook title squeezed at ${width}`);
+    for (const selector of ['#clear-chat', '#undo-chat-delete']) {
+      const button = await page.locator(selector).boundingBox();
+      assert(button.x >= heading.x && button.x + button.width <= heading.x + heading.width + 1, `chat action clipped at ${width}`);
+    }
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+  }
+  await page.screenshot({ path: path.join(output, 'chat-wide.png') });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.screenshot({ path: path.join(output, 'chat-mobile.png') });
+  await page.setViewportSize({ width: 1440, height: 1000 });
   assert.match(await page.locator('#summary-button').innerText(), /功能选择/);
   await page.locator('#summary-button').click();
   await page.locator('[data-feature="quiz"]').click();
@@ -196,6 +212,28 @@ try {
   await page.locator('#study-resizer').focus(); await page.keyboard.press('ArrowUp');
   assert((await page.locator('#viewer-document').boundingBox()).height < mobileOriginal.height);
   await page.screenshot({ path: path.join(output, 'quiz-mobile.png') });
+  // Long explanations should leave navigation reachable inside the quiz, without
+  // moving the original document or overflowing a short laptop/mobile viewport.
+  await page.locator('.quiz-explanation').evaluate(element => {
+    for (let i = 0; i < 24; i++) {
+      const paragraph = document.createElement('p');
+      paragraph.textContent = '长解析布局验收：结合原文检查公式中的每个物理量与适用条件。';
+      element.append(paragraph);
+    }
+  });
+  for (const viewport of [{ width: 390, height: 844 }, { width: 1180, height: 650 }]) {
+    await page.setViewportSize(viewport);
+    await page.locator('#quiz-workspace').evaluate(element => { element.scrollTop = 0; });
+    const practice = await page.locator('#quiz-workspace').boundingBox();
+    const nav = await page.locator('.quiz-navigation').boundingBox();
+    assert(nav.y >= practice.y && nav.y + nav.height <= practice.y + practice.height + 1, 'quiz navigation outside panel');
+    const originalScroll = await page.locator('#viewer-scroll').evaluate(element => element.scrollTop);
+    await page.locator('#quiz-workspace').evaluate(element => { element.scrollTop = element.scrollHeight; });
+    assert.equal(await page.locator('#viewer-scroll').evaluate(element => element.scrollTop), originalScroll);
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+  }
+  await page.screenshot({ path: path.join(output, 'quiz-short-laptop.png') });
+  await page.setViewportSize({ width: 390, height: 844 });
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
   page.once('dialog', dialog => dialog.accept()); await page.locator('.quiz-reset').click();
   await page.waitForFunction(() => document.querySelector('.quiz-status').textContent.includes('已答 0'));
@@ -229,7 +267,8 @@ try {
   console.log(JSON.stringify({ passed: true, settings: true, selectedSourcesOnly: true, grading: true, citations: true,
     persistedAfterReload: true, reset: true, math: true, summary: true, mobile: true, applicationLibrary: true,
     embeddedQuizPanel: true, simultaneousOriginalAndQuiz: true, responsiveStudyLayout: true,
-    focusReadingLayout: true, contextDrawers: true, conversationPreserved: true, draggableColumns: true, layoutPersistence: true, applicationDeleteUndo: true }));
+    focusReadingLayout: true, contextDrawers: true, conversationPreserved: true, draggableColumns: true, layoutPersistence: true, applicationDeleteUndo: true,
+    readableNarrowHeaders: true, stickyQuizNavigation: true, independentReadingScroll: true }));
 } catch (error) {
   await page.screenshot({ path: path.join(output, 'failure.png') });
   console.error(JSON.stringify({ errors, url: page.url() }));
