@@ -29,6 +29,11 @@ const state = {
   activeCitation: 1,
   highlightMessageId: "",
   deletedCount: 0,
+  replyTo: null,
+  activeGeneration: null,
+  pendingExchangeId: null,
+  pendingExchange: null,
+  cancelling: false,
 };
 
 const dom = {
@@ -72,6 +77,7 @@ const ui = Object.fromEntries([
   "new-note", "export-notes", "note-dialog", "note-form", "note-title", "note-content",
   "note-sources", "close-note", "delete-note", "export-note", "save-note", "clear-chat", "undo-chat-delete",
   "question-image-input", "attach-question-image", "question-image-draft", "question-image-list", "question-image-text", "highlight-legend",
+  "reply-draft", "reply-preview", "remove-reply", "cancel-generation",
 ].map((id) => [id, document.getElementById(id)]));
 const emptyChatTemplate = dom.emptyChat.outerHTML;
 let currentNote = null;
@@ -129,6 +135,9 @@ function setBusy(busy) {
   document.querySelectorAll(".draft-remove").forEach((button) => button.disabled = busy);
   document.querySelectorAll(".delete-exchange").forEach((button) => button.disabled = busy || button.dataset.pending === "true");
   ui["undo-chat-delete"].disabled = busy || !state.deletedCount;
+  document.querySelectorAll('.quote-answer').forEach((button) => button.disabled = busy || !button.dataset.exchangeId);
+  ui['remove-reply'].disabled = busy;
+  updateCancelButton();
 }
 
 async function loadNotebooks() {
@@ -152,6 +161,10 @@ async function switchNotebook(id) {
   state.notebookId = id;
   state.draftImages = [];
   renderDraftImages();
+  state.replyTo = null;
+  state.pendingExchangeId = null;
+  state.pendingExchange = null;
+  renderReplyDraft();
   localStorage.setItem("zhixue-notebook", id);
   state.selectedSources.clear();
   state.documents = [];
@@ -196,6 +209,7 @@ async function api(path, options = {}) {
       : data?.detail || `请求失败：HTTP ${response.status}`;
     const error = new Error(detail);
     error.chatId = response.headers.get("X-Chat-Id");
+    error.cancelled = response.headers.get('X-Generation-Cancelled') === '1';
     throw error;
   }
   return data;
@@ -545,6 +559,16 @@ function addMessage(role, text, options = {}) {
     body.className = "message-body";
     body.textContent = text;
     article.append(body);
+    if (options.replyTo?.answer) {
+      const quote = document.createElement('details');
+      quote.className = 'quoted-answer';
+      const heading = document.createElement('summary');
+      heading.textContent = '引用的 AI 回答';
+      const content = document.createElement('div');
+      content.textContent = options.replyTo.answer;
+      quote.append(heading, content);
+      article.prepend(quote);
+    }
     if (options.images?.length) {
       const images = document.createElement("div");
       images.className = "message-images";
@@ -653,6 +677,14 @@ function updateAssistantMessage(messageId, answer, citations, mode, sourceMode, 
   save.dataset.saveAnswer = messageId;
   save.textContent = "保存为笔记";
   article.append(save);
+  const quote = document.createElement('button');
+  quote.type = 'button';
+  quote.className = 'button ghost quote-answer';
+  quote.dataset.quoteAnswer = messageId;
+  quote.textContent = '引用追问';
+  quote.disabled = state.busy || !article.dataset.exchangeId;
+  quote.dataset.exchangeId = article.dataset.exchangeId || '';
+  article.append(quote);
   scrollMessages();
 }
 
@@ -665,12 +697,73 @@ function setAssistantError(messageId, error) {
   article.querySelector(".message-body").textContent = error.message;
 }
 
+function setAssistantCancelled(messageId) {
+  setAssistantError(messageId, new Error('已取消生成，可修改问题后重新发送。'));
+  const article = dom.messages.querySelector(`[data-message-id="${messageId}"]`);
+  if (!article) return;
+  article.classList.remove('error');
+  article.classList.add('cancelled');
+  article.querySelector('.message-label span:last-child').textContent = '已取消';
+}
+
+function renderReplyDraft() {
+  ui['reply-draft'].hidden = !state.replyTo;
+  ui['reply-preview'].textContent = state.replyTo ? `${state.replyTo.question}\n${state.replyTo.answer.slice(0, 220)}` : '';
+}
+
+function updateCancelButton() {
+  const active = Boolean(state.activeGeneration || state.pendingExchangeId);
+  ui['cancel-generation'].hidden = !active;
+  ui['cancel-generation'].disabled = state.cancelling;
+  ui['cancel-generation'].textContent = state.cancelling ? '正在取消…' : '取消生成';
+  dom.sendButton.hidden = active;
+}
+
+function startGeneration(question) {
+  const job = { id: crypto.randomUUID(), notebookId: state.notebookId, controller: new AbortController(), question, cancelled: false };
+  state.activeGeneration = job;
+  updateCancelButton();
+  return job;
+}
+
+function finishGeneration(job) {
+  if (state.activeGeneration === job) state.activeGeneration = null;
+  setBusy(state.chatPending);
+}
+
+ui['remove-reply'].addEventListener('click', () => { if (!state.busy) { state.replyTo = null; renderReplyDraft(); } });
+ui['cancel-generation'].addEventListener('click', async () => {
+  if (state.cancelling) return;
+  const job = state.activeGeneration;
+  const restored = state.pendingExchange;
+  const id = job?.id || state.pendingExchangeId;
+  if (!id) return;
+  state.cancelling = true;
+  updateCancelButton();
+  try {
+    const result = await api(`/api/notebooks/${encodeURIComponent(job?.notebookId || state.notebookId)}/chat/${encodeURIComponent(id)}/cancel`, { method: 'POST' });
+    if (result.cancelled) {
+      if (job) { job.cancelled = true; job.controller.abort(); }
+      else if (restored) {
+        if (!dom.questionInput.value) dom.questionInput.value = restored.question;
+        if (!state.draftImages.length && restored.images?.length) { state.draftImages = restored.images; renderDraftImages(); }
+        if (!state.replyTo && restored.reply_to?.answer) { state.replyTo = restored.reply_to; renderReplyDraft(); }
+      }
+      await loadChat();
+      showToast('已取消生成，问题和图片可继续修改后发送。');
+    } else showToast('这条回答已经结束，无需取消。');
+  } catch (error) { showToast(error.message, true); }
+  finally { state.cancelling = false; setBusy(Boolean(state.activeGeneration) || state.chatPending); }
+});
+
 function bindExchange(assistantId, userId, exchangeId, pending = false) {
   if (!exchangeId) return;
   const assistant = dom.messages.querySelector(`[data-message-id="${assistantId}"]`);
   const user = dom.messages.querySelector(`[data-message-id="${userId}"]`);
   if (!assistant || !user) return;
   assistant.dataset.exchangeId = user.dataset.exchangeId = exchangeId;
+  const quote = assistant.querySelector('.quote-answer');
+  if (quote) { quote.dataset.exchangeId = exchangeId; quote.disabled = state.busy || pending; }
   assistant.querySelector(".delete-exchange")?.remove();
   const button = document.createElement("button");
   button.type = "button";
@@ -703,6 +796,7 @@ async function deleteExchange(button) {
     });
     if (!dom.messages.querySelector(".message")) { dom.messages.innerHTML = emptyChatTemplate; selectionStatus(); }
     state.deletedCount = result.deleted_count;
+    if (state.replyTo?.id === exchangeId) { state.replyTo = null; renderReplyDraft(); }
     updateUndoButton();
     const removed = new Set(result.deleted_image_ids || []);
     if (state.draftImages.some((image) => removed.has(image.id))) {
@@ -802,14 +896,18 @@ async function askQuestion(question) {
   if (state.busy) return showToast("请等待当前回答完成。");
   if (state.documents.length && !selectedIds().length) return showToast("请至少勾选一个来源。", true);
   window.__lastQuestionTerms = extractSearchTerms(text);
-  const userId = addMessage("user", text || "请解答图片中的题目，并结合选中的课程资料。", { images });
+  const replyTo = state.replyTo;
+  const userId = addMessage("user", text || "请解答图片中的题目，并结合选中的课程资料。", { images, replyTo });
   const assistantId = addMessage("assistant", "", { loading: true });
+  const job = startGeneration(text);
   setBusy(true);
   try {
     const data = await api("/api/ask", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
+      signal: job.controller.signal,
       body: JSON.stringify({ question: text, notebook_id: state.notebookId, document_ids: selectedIds(),
+        request_id: job.id, reply_to_id: replyTo?.id || null,
         image_ids: images.map((image) => image.id), image_text: state.imageTextEdited ? ui["question-image-text"].value : null }),
     });
     updateAssistantMessage(
@@ -824,13 +922,15 @@ async function askQuestion(question) {
     if (data.image_question_text) addRecognizedText(dom.messages.querySelector(`[data-message-id="${userId}"]`), data.image_question_text, data.image_recognition_mode);
     state.draftImages = [];
     renderDraftImages();
+    state.replyTo = null;
+    renderReplyDraft();
   } catch (error) {
-    setAssistantError(assistantId, error);
-    bindExchange(assistantId, userId, error.chatId);
-    showToast(error.message, true);
+    if (job.cancelled || error.cancelled) setAssistantCancelled(assistantId);
+    else { setAssistantError(assistantId, error); showToast(error.message, true); }
+    bindExchange(assistantId, userId, error.chatId || (job.cancelled ? job.id : null));
     if (!dom.questionInput.value) dom.questionInput.value = text;
   } finally {
-    setBusy(false);
+    finishGeneration(job);
     dom.questionInput.focus();
   }
 }
@@ -970,20 +1070,25 @@ async function generateSummary() {
   setBusy(true);
   const userId = addMessage("user", "根据当前选中的来源生成一份复习提纲。");
   const assistantId = addMessage("assistant", "", { loading: true });
+  const job = startGeneration('根据当前选中的来源生成一份复习提纲。');
+  updateCancelButton();
   try {
     const data = await api("/api/summary", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ notebook_id: state.notebookId, document_ids: selectedIds() }),
+      signal: job.controller.signal,
+      body: JSON.stringify({ notebook_id: state.notebookId, document_ids: selectedIds(), request_id: job.id }),
     });
     updateAssistantMessage(assistantId, data.answer, data.citations, data.mode, data.source_mode, { coverage: data.summary_coverage });
     bindExchange(assistantId, userId, data.chat_id);
   } catch (error) {
-    setAssistantError(assistantId, error);
-    bindExchange(assistantId, userId, error.chatId);
-    showToast(error.message, true);
+    if (job.cancelled || error.cancelled) {
+      setAssistantCancelled(assistantId);
+      if (!dom.questionInput.value) dom.questionInput.value = job.question;
+    } else { setAssistantError(assistantId, error); showToast(error.message, true); }
+    bindExchange(assistantId, userId, error.chatId || (job.cancelled ? job.id : null));
   } finally {
-    setBusy(false);
+    finishGeneration(job);
   }
 }
 
@@ -1027,6 +1132,16 @@ dom.questionInput.addEventListener("keydown", (event) => {
 });
 
 dom.messages.addEventListener("click", (event) => {
+  const quote = event.target.closest('[data-quote-answer]');
+  if (quote) {
+    if (state.busy) return;
+    const answer = state.answers.get(quote.dataset.quoteAnswer);
+    if (!answer || !quote.dataset.exchangeId) return;
+    state.replyTo = { id: quote.dataset.exchangeId, question: answer.title, answer: answer.answer };
+    renderReplyDraft();
+    dom.questionInput.focus();
+    return;
+  }
   const remove = event.target.closest("[data-delete-exchange]");
   if (remove) { deleteExchange(remove); return; }
   const save = event.target.closest("[data-save-answer]");
@@ -1104,18 +1219,22 @@ async function loadChat(polling = false) {
   state.answers.clear();
   for (const exchange of exchanges) {
     addMessage("user", exchange.question, { id: `user-${exchange.id}`, images: exchange.images,
-      imageText: exchange.result.image_question_text, imageMode: exchange.result.image_recognition_mode });
+      imageText: exchange.result.image_question_text, imageMode: exchange.result.image_recognition_mode, replyTo: exchange.reply_to });
     const id = addMessage("assistant", "", { id: exchange.id, loading: true });
     if (exchange.status === "complete") {
       const result = exchange.result;
       updateAssistantMessage(id, result.answer, result.citations, result.mode, result.source_mode, { question: exchange.question, coverage: result.summary_coverage });
     } else if (exchange.status === "error") {
-      setAssistantError(id, new Error(exchange.result.detail || "上次请求未完成，请重新提问。"));
+      if (exchange.result.cancelled) setAssistantCancelled(id);
+      else setAssistantError(id, new Error(exchange.result.detail || "上次请求未完成，请重新提问。"));
     }
     bindExchange(id, `user-${exchange.id}`, exchange.id, exchange.status === "pending");
   }
   selectionStatus();
   state.chatPending = exchanges.some((exchange) => exchange.status === "pending");
+  state.pendingExchange = exchanges.findLast((exchange) => exchange.status === 'pending') || null;
+  state.pendingExchangeId = state.pendingExchange?.id || null;
+  updateCancelButton();
   if (state.chatPending) {
     setBusy(true);
     chatPollTimer = window.setTimeout(() => {
@@ -1128,7 +1247,14 @@ ui["clear-chat"].addEventListener("click", async () => {
   if (state.busy || !window.confirm("永久清空当前笔记本的全部对话及删除记录？此操作无法撤销，已保存的笔记和资料不会删除。")) return;
   setBusy(true);
   try {
-    await api(`/api/notebooks/${encodeURIComponent(state.notebookId)}/chat`, { method: "DELETE" });
+    const result = await api(`/api/notebooks/${encodeURIComponent(state.notebookId)}/chat`, { method: "DELETE" });
+    state.replyTo = null;
+    renderReplyDraft();
+    const removed = new Set(result.deleted_image_ids || []);
+    if (state.draftImages.some((image) => removed.has(image.id))) {
+      state.draftImages = state.draftImages.filter((image) => !removed.has(image.id));
+      renderDraftImages();
+    }
     await loadChat();
     showToast("当前笔记本的对话已清空。");
   } catch (error) { showToast(error.message, true); }

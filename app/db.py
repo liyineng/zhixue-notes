@@ -117,6 +117,8 @@ def init_db() -> None:
             conn.execute("ALTER TABLE chat_exchanges ADD COLUMN images_json TEXT NOT NULL DEFAULT '[]'")
         if "deleted_at" not in chat_columns:
             conn.execute("ALTER TABLE chat_exchanges ADD COLUMN deleted_at TEXT")
+        if "reply_to_json" not in chat_columns:
+            conn.execute("ALTER TABLE chat_exchanges ADD COLUMN reply_to_json TEXT NOT NULL DEFAULT '{}'")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_chat_deleted ON chat_exchanges(notebook_id, deleted_at)")
         conn.execute("""UPDATE chat_exchanges SET status='error', result_json=? WHERE status='pending'""",
                      (json.dumps({"detail": "上次生成未完成，请重新提问。"}, ensure_ascii=False),))
@@ -366,18 +368,43 @@ def delete_note(note_id: str) -> None:
 
 
 def start_exchange(exchange_id: str, notebook_id: str, question: str,
-                   images: list[dict[str, Any]] | None = None) -> None:
+                   images: list[dict[str, Any]] | None = None, reply_to: dict[str, Any] | None = None) -> None:
     with connection() as conn:
-        conn.execute("""INSERT INTO chat_exchanges(id, notebook_id, question, status, created_at, images_json)
-                        VALUES (?, ?, ?, 'pending', ?, ?)""",
+        conn.execute("""INSERT INTO chat_exchanges(id, notebook_id, question, status, created_at, images_json, reply_to_json)
+                        VALUES (?, ?, ?, 'pending', ?, ?, ?)""",
                      (exchange_id, notebook_id, question, datetime.now(UTC).isoformat(),
-                      json.dumps(images or [], ensure_ascii=False)))
+                      json.dumps(images or [], ensure_ascii=False), json.dumps(reply_to or {}, ensure_ascii=False)))
 
 
 def finish_exchange(exchange_id: str, result: dict[str, Any], *, error: bool = False) -> None:
     with connection() as conn:
         conn.execute("UPDATE chat_exchanges SET result_json=?, status=? WHERE id=?",
                      (json.dumps(result, ensure_ascii=False), "error" if error else "complete", exchange_id))
+
+
+def finish_pending_exchange(exchange_id: str, result: dict[str, Any], *, error: bool = False) -> bool:
+    with connection() as conn:
+        cursor = conn.execute("UPDATE chat_exchanges SET result_json=?, status=? WHERE id=? AND status='pending'",
+                              (json.dumps(result, ensure_ascii=False), "error" if error else "complete", exchange_id))
+        return cursor.rowcount > 0
+
+
+def get_exchange(notebook_id: str, exchange_id: str) -> dict[str, Any] | None:
+    with connection() as conn:
+        row = conn.execute("SELECT * FROM chat_exchanges WHERE notebook_id=? AND id=? AND deleted_at IS NULL",
+                           (notebook_id, exchange_id)).fetchone()
+    if row is None:
+        return None
+    item = _row_to_dict(row)
+    item['result'] = json.loads(item.pop('result_json'))
+    item['images'] = json.loads(item.pop('images_json'))
+    item['reply_to'] = json.loads(item.pop('reply_to_json'))
+    return item
+
+
+def exchange_exists(exchange_id: str) -> bool:
+    with connection() as conn:
+        return bool(conn.execute('SELECT 1 FROM chat_exchanges WHERE id=?', (exchange_id,)).fetchone())
 
 
 def list_exchanges(notebook_id: str, *, include_deleted: bool = False) -> list[dict[str, Any]]:
@@ -389,6 +416,7 @@ def list_exchanges(notebook_id: str, *, include_deleted: bool = False) -> list[d
         item = _row_to_dict(row)
         item["result"] = json.loads(item.pop("result_json"))
         item["images"] = json.loads(item.pop("images_json"))
+        item["reply_to"] = json.loads(item.pop("reply_to_json"))
         result.append(item)
     return result
 

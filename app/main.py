@@ -15,7 +15,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
-from . import db
+from . import db, generation
 from .config import (
     MAX_UPLOAD_BYTES,
     STATIC_DIR,
@@ -78,6 +78,8 @@ app = FastAPI(
 
 
 class AskRequest(BaseModel):
+    request_id: str | None = Field(default=None, max_length=100, pattern=r'^[a-zA-Z0-9_-]+$')
+    reply_to_id: str | None = Field(default=None, max_length=100)
     question: str = Field(default="", max_length=4000)
     image_ids: list[str] = Field(default_factory=list, max_length=3)
     image_text: str | None = Field(default=None, max_length=20000)
@@ -87,6 +89,7 @@ class AskRequest(BaseModel):
 
 
 class SummaryRequest(BaseModel):
+    request_id: str | None = Field(default=None, max_length=100, pattern=r'^[a-zA-Z0-9_-]+$')
     document_ids: list[str] | None = None
     notebook_id: str | None = None
     focus: str = Field(default="", max_length=300)
@@ -539,6 +542,13 @@ def update_settings(payload: SettingsRequest) -> dict[str, Any]:
 
 @app.post("/api/ask")
 async def ask(payload: AskRequest) -> dict[str, Any]:
+    payload = payload.model_copy(update={'notebook_id': payload.notebook_id or 'default'})
+    _notebook(payload.notebook_id)
+    exchange_id = payload.request_id or uuid4().hex
+    return await generation.run(payload.notebook_id, exchange_id, lambda: _ask(payload, exchange_id))
+
+
+async def _ask(payload: AskRequest, exchange_id: str) -> dict[str, Any]:
     settings = db.get_settings()
     top_k = payload.top_k or int(settings.get("top_k", 6))
     selected_documents = _scope(payload.notebook_id, payload.document_ids)
@@ -551,16 +561,29 @@ async def ask(payload: AskRequest) -> dict[str, Any]:
             raise HTTPException(status_code=400, detail="题目图片不在当前笔记本中或已被删除。")
         images.append(image)
     document_ids = {doc["id"] for doc in selected_documents}
+    reply_to = {}
+    if payload.reply_to_id:
+        parent = db.get_exchange(payload.notebook_id, payload.reply_to_id)
+        if not parent or parent['status'] != 'complete' or not parent['result'].get('answer'):
+            raise HTTPException(status_code=400, detail='引用的回答不在当前笔记本中、已删除或尚未完成，请重新选择。')
+        reply_to = {'id': parent['id'], 'question': parent['question'], 'answer': parent['result']['answer'],
+                    'image_question_text': parent['result'].get('image_question_text', ''),
+                    'citation_indices': [c['index'] for c in parent['result'].get('citations', [])]}
     started = time.perf_counter()
 
     document_names = [document["name"] for document in selected_documents]
-    exchange_id = uuid4().hex
     question = payload.question.strip() or "请解答图片中的题目，并结合选中的课程资料。"
-    db.start_exchange(exchange_id, payload.notebook_id or "default", question, [_public_image(image) for image in images])
+    db.start_exchange(exchange_id, payload.notebook_id or "default", question, [_public_image(image) for image in images], reply_to)
 
     try:
         image_text, image_mode = await read_question(images, settings, payload.image_text) if images else ("", "")
         effective_question = question
+        if reply_to:
+            indices = set(reply_to['citation_indices'])
+            previous = re.sub(r'\[(\d+)\]', lambda m: f'【历史引用{m[1]}】' if int(m[1]) in indices else m[0], reply_to['answer'])
+            effective_question = (f"本次追问：{question}\n\n用户明确引用的上一条问答（仅作为上下文，历史引用编号不能用于本次资料引用）："
+                                  f"\n原问题：{reply_to['question']}\n原题目图片识别内容：{reply_to['image_question_text']}\n"
+                                  f"原回答：\n{previous}\n\n请针对本次追问解释；资料依据必须重新从本次提供的资料片段中取得。")
         if image_text:
             effective_question += "\n\n题目图片的识别内容（不确定处请指出，不要猜测缺失条件）：\n" + image_text
         analysis = await analyze_question(
@@ -568,7 +591,7 @@ async def ask(payload: AskRequest) -> dict[str, Any]:
             document_names,
             settings,
         )
-        if images and document_ids:
+        if (images or reply_to) and document_ids:
             analysis["needs_retrieval"] = True
         if analysis["intent"] == "summary":
             analysis["needs_retrieval"] = True
@@ -614,7 +637,7 @@ async def ask(payload: AskRequest) -> dict[str, Any]:
                                            document_names, analysis["needs_retrieval"])
         answer, contexts = cited_sources(answer, contexts)
     except Exception as exc:
-        db.finish_exchange(exchange_id, {"detail": str(exc)}, error=True)
+        db.finish_pending_exchange(exchange_id, {"detail": str(exc)}, error=True)
         if isinstance(exc, HTTPException):
             exc.headers = {**(exc.headers or {}), "X-Chat-Id": exchange_id}
             raise
@@ -635,7 +658,8 @@ async def ask(payload: AskRequest) -> dict[str, Any]:
         "image_question_text": image_text,
         "image_recognition_mode": image_mode,
     }
-    db.finish_exchange(exchange_id, result)
+    if not db.finish_pending_exchange(exchange_id, result):
+        raise generation.cancelled_error(exchange_id)
     return result
 
 
@@ -647,12 +671,18 @@ def summary_coverage(contexts: list[dict[str, Any]]) -> dict[str, Any]:
 
 @app.post("/api/summary")
 async def summary(payload: SummaryRequest) -> dict[str, Any]:
+    payload = payload.model_copy(update={'notebook_id': payload.notebook_id or 'default'})
+    _notebook(payload.notebook_id)
+    exchange_id = payload.request_id or uuid4().hex
+    return await generation.run(payload.notebook_id, exchange_id, lambda: _summary(payload, exchange_id))
+
+
+async def _summary(payload: SummaryRequest, exchange_id: str) -> dict[str, Any]:
     settings = db.get_settings()
     selected = _scope(payload.notebook_id, payload.document_ids)
     selected = summary_documents(payload.focus or "", selected)
     if not selected:
         raise HTTPException(status_code=400, detail="请先上传资料。")
-    exchange_id = uuid4().hex
     question = "根据当前选中的来源生成一份复习提纲。"
     if payload.focus:
         question += f"复习重点：{payload.focus}"
@@ -669,7 +699,7 @@ async def summary(payload: SummaryRequest) -> dict[str, Any]:
         answer = await make_summary(contexts, settings, question=question)
         answer, contexts = cited_sources(answer, contexts)
     except Exception as exc:
-        db.finish_exchange(exchange_id, {"detail": str(exc)}, error=True)
+        db.finish_pending_exchange(exchange_id, {"detail": str(exc)}, error=True)
         if isinstance(exc, HTTPException):
             exc.headers = {**(exc.headers or {}), "X-Chat-Id": exchange_id}
             raise
@@ -681,8 +711,15 @@ async def summary(payload: SummaryRequest) -> dict[str, Any]:
         "mode": "model" if model_configured(settings) else "extractive",
         "summary_coverage": coverage,
     }
-    db.finish_exchange(exchange_id, result)
+    if not db.finish_pending_exchange(exchange_id, result):
+        raise generation.cancelled_error(exchange_id)
     return result
+
+
+@app.post('/api/notebooks/{notebook_id}/chat/{exchange_id}/cancel')
+async def cancel_generation(notebook_id: str, exchange_id: str) -> dict[str, Any]:
+    _notebook(notebook_id)
+    return generation.cancel(notebook_id, exchange_id)
 
 
 @app.get("/api/notebooks/{notebook_id}/chat")
@@ -692,7 +729,7 @@ def chat_history(notebook_id: str) -> dict[str, Any]:
 
 
 @app.delete("/api/notebooks/{notebook_id}/chat")
-def clear_chat(notebook_id: str) -> dict[str, bool]:
+def clear_chat(notebook_id: str) -> dict[str, Any]:
     _notebook(notebook_id)
     image_ids = {image["id"] for exchange in db.list_exchanges(notebook_id, include_deleted=True) for image in exchange["images"]}
     db.clear_exchanges(notebook_id)
@@ -701,7 +738,7 @@ def clear_chat(notebook_id: str) -> dict[str, bool]:
         if image:
             db.delete_question_image(image_id)
             Path(image["path"]).unlink(missing_ok=True)
-    return {"deleted": True}
+    return {"deleted": True, "deleted_image_ids": list(image_ids)}
 
 
 @app.post("/api/notebooks/{notebook_id}/chat/undo")

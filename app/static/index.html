@@ -143,6 +143,7 @@
             </div>
           </div>
           <form id="ask-form" class="composer">
+            <div id="reply-draft" class="reply-draft" hidden><div><strong>引用回答追问</strong><p id="reply-preview"></p></div><button id="remove-reply" type="button" class="icon-button" aria-label="移除引用回答">×</button></div>
             <input id="question-image-input" type="file" accept="image/png,image/jpeg,image/webp" multiple hidden />
             <div id="question-image-draft" class="question-image-draft" hidden>
               <div id="question-image-list" class="question-image-list"></div>
@@ -160,6 +161,7 @@
             <button id="send-button" class="send-button" type="submit" aria-label="发送问题">
               <svg class="icon"><use href="#i-send"></use></svg>
             </button>
+            <button id="cancel-generation" class="button cancel-generation" type="button" hidden>取消生成</button>
             </div>
           </form>
         </section>
