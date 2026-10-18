@@ -58,6 +58,33 @@ class FormulaInventoryTests(unittest.TestCase):
         for question in ['这个公式怎么推导', '解释谐振频率公式', '整理第二章知识点', '这个公式有什么问题', '公式有哪些错误']:
             self.assertFalse(is_formula_inventory(question), question)
 
+    def test_dense_formula_batches_keep_all_pages_and_local_citations(self):
+        contexts = [{'index': i, 'document_id': 'selected', 'document_name': '第二章',
+                     'page': i, 'text': '公式' * 1500} for i in range(1, 8)]
+        seen = []
+        async def summarize(batch, settings, question='', **kwargs):
+            self.assertLessEqual(sum(len(c['text']) for c in batch), 8000)
+            seen.extend(c['page'] for c in batch)
+            return f"公式 [{batch[0]['index']}]"
+        with patch.object(main, 'make_summary', side_effect=summarize):
+            asyncio.run(main._generate_summary(contexts, {}, '有哪些公式', 'test-missing',
+                                               [{'id': 'selected', 'name': '第二章'}], formula_inventory=True))
+        self.assertEqual(seen, list(range(1, 8)))
+
+    def test_empty_timeout_messages_retain_failure_stage_for_ask_and_summary(self):
+        notebook = self.notebook('错误详情')
+        document = self.upload(notebook, '资料.md', '公式名称和表达式')
+        for endpoint, target in [('/api/ask', 'analyze_question'), ('/api/summary', 'make_summary')]:
+            with patch.object(main, target, AsyncMock(side_effect=TimeoutError())):
+                response = self.client.post(endpoint, json={'notebook_id': notebook, 'document_ids': [document],
+                                                            'question': '解释公式'})
+            self.assertEqual(response.status_code, 502, response.text)
+            self.assertIn('超时', response.json()['detail'])
+            exchange = db.list_exchanges(notebook)[-1]
+            self.assertEqual(exchange['status'], 'error')
+            self.assertTrue(exchange['result']['failed_progress']['steps'])
+            self.assertEqual(exchange['result']['error_type'], 'TimeoutError')
+
     def test_unread_formula_pages_are_reported_even_if_model_omits_warning(self):
         notebook = self.notebook('未读公式')
         document = self.upload(notebook, '第二章.md', '公式名称')

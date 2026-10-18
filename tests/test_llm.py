@@ -1,7 +1,7 @@
 import asyncio
 import json
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import httpx
 
@@ -9,6 +9,37 @@ from app.llm import chat_completion
 
 
 class CompletionTests(unittest.TestCase):
+    def network_call(self, failures, *, status=200):
+        attempts = []
+        def handle(request):
+            attempts.append(request)
+            if len(attempts) <= failures:
+                raise httpx.ReadTimeout('', request=request)
+            return httpx.Response(status, json=self.reply('完整回答'))
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handle))
+        with patch('app.llm.httpx.AsyncClient', return_value=client), patch('app.llm.asyncio.sleep', AsyncMock()):
+            result = asyncio.run(chat_completion(base_url='https://example.invalid', api_key='test',
+                model='mock', messages=[], temperature=0, max_tokens=100))
+        return result, len(attempts)
+
+    def test_transient_timeout_retries_once_and_persistent_timeout_has_a_message(self):
+        self.assertEqual(self.network_call(1), ('完整回答', 2))
+        with self.assertRaisesRegex(RuntimeError, '请求超时'):
+            self.network_call(2)
+
+    def test_gateway_failure_retries_but_authentication_failure_does_not(self):
+        for status, expected in [(503, 2), (401, 1)]:
+            attempts = []
+            def handle(request):
+                attempts.append(request)
+                return httpx.Response(status, text='upstream error')
+            client = httpx.AsyncClient(transport=httpx.MockTransport(handle))
+            with patch('app.llm.httpx.AsyncClient', return_value=client), patch('app.llm.asyncio.sleep', AsyncMock()):
+                with self.assertRaisesRegex(RuntimeError, f'HTTP {status}'):
+                    asyncio.run(chat_completion(base_url='https://example.invalid', api_key='test',
+                        model='mock', messages=[], temperature=0, max_tokens=100))
+            self.assertEqual(len(attempts), expected)
+
     def call(self, replies, *, base_url='https://api.deepseek.com', thinking=None):
         requests = []
 

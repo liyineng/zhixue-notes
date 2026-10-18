@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import asyncio
 import re
 from typing import Any
 from urllib.parse import urlparse
@@ -215,12 +216,24 @@ async def chat_completion(
         payload["thinking"] = {"type": "enabled" if thinking else "disabled"}
         if thinking:
             payload["reasoning_effort"] = "low"
-    async with httpx.AsyncClient(timeout=180.0) as client:
-        response = await client.post(
-            _endpoint(base_url),
-            headers=headers,
-            json=payload,
-        )
+    async with httpx.AsyncClient(timeout=httpx.Timeout(180.0, connect=15.0)) as client:
+        async def request() -> httpx.Response:
+            for attempt in range(2):
+                try:
+                    response = await client.post(_endpoint(base_url), headers=headers, json=payload)
+                except httpx.TimeoutException as exc:
+                    if attempt:
+                        raise RuntimeError('模型接口请求超时，自动重试后仍未收到完整响应。已完成的图片识别结果会保留，请稍后重试。') from exc
+                except httpx.TransportError as exc:
+                    if attempt:
+                        raise RuntimeError('连接模型接口失败，自动重试后仍无法连接。请检查网络、代理和模型接口地址。') from exc
+                else:
+                    if response.status_code not in {429, 502, 503, 504} or attempt:
+                        return response
+                await asyncio.sleep(0.5)
+            raise RuntimeError('模型接口请求未完成，请稍后重试。')
+
+        response = await request()
         if response.status_code < 400 and deepseek:
             choices = response.json().get("choices") or []
             choice = choices[0] if choices else {}
@@ -233,7 +246,7 @@ async def chat_completion(
                     payload["max_tokens"] = min(16384, max(8192, max_tokens * 2))
                 else:
                     payload["thinking"] = {"type": "disabled"}
-                response = await client.post(_endpoint(base_url), headers=headers, json=payload)
+                response = await request()
     if response.status_code >= 400:
         detail = response.text[:800]
         raise RuntimeError(

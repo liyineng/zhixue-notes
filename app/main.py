@@ -14,6 +14,7 @@ from uuid import uuid4
 from fastapi import FastAPI, File, HTTPException, UploadFile, Query
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
+import httpx
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
@@ -40,6 +41,24 @@ from urllib.parse import quote
 mimetypes.add_type("text/javascript", ".mjs")
 
 _index_version = 0
+
+
+def _generation_failure(exchange_id: str, notebook_id: str, exc: Exception) -> str:
+    """Retain the failing stage and never turn an empty exception into an empty error."""
+    exchange = db.get_exchange(notebook_id, exchange_id)
+    progress = (exchange or {}).get('result', {}).get('progress', {})
+    if isinstance(exc, HTTPException):
+        detail = str(exc.detail)
+    elif isinstance(exc, (httpx.TimeoutException, TimeoutError)):
+        detail = '请求模型接口超时，请稍后重试。已完成的图片识别结果会保留。'
+    else:
+        detail = str(exc).strip() or f'处理请求时发生异常（{type(exc).__name__}），请重试。'
+    steps = progress.get('steps', [])
+    if steps:
+        detail = f"{steps[-1]['label']}时失败：{detail}"
+    db.finish_pending_exchange(exchange_id, {'detail': detail, 'error_type': type(exc).__name__,
+                                            'failed_progress': progress}, error=True)
+    return detail
 
 
 def _invalidate_index() -> None:
@@ -809,11 +828,11 @@ async def _ask(payload: AskRequest, exchange_id: str) -> dict[str, Any]:
         if coverage is not None:
             coverage.update(summary_coverage_data(coverage, contexts))
     except Exception as exc:
-        db.finish_pending_exchange(exchange_id, {"detail": str(exc)}, error=True)
+        detail = _generation_failure(exchange_id, payload.notebook_id or 'default', exc)
         if isinstance(exc, HTTPException):
             exc.headers = {**(exc.headers or {}), "X-Chat-Id": exchange_id}
             raise
-        raise HTTPException(status_code=502, detail=str(exc), headers={"X-Chat-Id": exchange_id}) from exc
+        raise HTTPException(status_code=502, detail=detail, headers={"X-Chat-Id": exchange_id}) from exc
     elapsed_ms = round((time.perf_counter() - started) * 1000)
     result = {
         "chat_id": exchange_id,
@@ -866,7 +885,9 @@ def _summary_scope(contexts: list[dict[str, Any]], documents: list[dict[str, Any
 
 async def _generate_summary(contexts: list[dict[str, Any]], settings: dict[str, Any], question: str,
                             exchange_id: str, documents: list[dict[str, Any]], *, formula_inventory: bool = False) -> str:
-    batches = summary_batches(contexts)
+    # Formula transcription is much denser than ordinary prose; keep each model
+    # request smaller without sampling or dropping any pages.
+    batches = summary_batches(contexts, character_limit=8000) if formula_inventory else summary_batches(contexts)
     answers = []
     for index, batch in enumerate(batches, 1):
         name = batch[0]['document_name']
@@ -929,11 +950,11 @@ async def _summary(payload: SummaryRequest, exchange_id: str) -> dict[str, Any]:
         answer, contexts = cited_sources(answer, contexts)
         coverage.update(summary_coverage_data(coverage, contexts))
     except Exception as exc:
-        db.finish_pending_exchange(exchange_id, {"detail": str(exc)}, error=True)
+        detail = _generation_failure(exchange_id, payload.notebook_id or 'default', exc)
         if isinstance(exc, HTTPException):
             exc.headers = {**(exc.headers or {}), "X-Chat-Id": exchange_id}
             raise
-        raise HTTPException(status_code=502, detail=str(exc), headers={"X-Chat-Id": exchange_id}) from exc
+        raise HTTPException(status_code=502, detail=detail, headers={"X-Chat-Id": exchange_id}) from exc
     result = {
         "chat_id": exchange_id,
         "answer": answer,
