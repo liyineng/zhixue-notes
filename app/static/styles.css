@@ -375,13 +375,18 @@ select { border: 1px solid var(--line-strong); border-radius: 8px; background: w
 
 .workspace {
   display: grid;
-  grid-template-columns: minmax(390px, 0.86fr) minmax(420px, 1.14fr);
+  grid-template-columns: minmax(420px, 1fr) minmax(360px, 1fr);
   min-width: 0;
   min-height: 0;
 }
 
 .mobile-tabs {
   display: none;
+}
+.mobile-sources-tab { display: none; }
+button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible, summary:focus-visible {
+  outline: 2px solid var(--blue);
+  outline-offset: 3px;
 }
 
 .chat-pane,
@@ -984,25 +989,34 @@ select { border: 1px solid var(--line-strong); border-radius: 8px; background: w
 
 @media (max-width: 760px) {
   body {
-    overflow: auto;
+    overflow: hidden;
   }
 
   .app-shell {
     display: block;
-    height: auto;
-    min-height: 100%;
+    height: 100dvh;
+    position: relative;
   }
 
   .sidebar {
-    max-height: none;
-    height: 55vh;
+    display: none;
+    position: absolute;
+    inset: 44px 0 0;
+    z-index: 5;
+    height: auto;
     border-right: 0;
     border-bottom: 1px solid var(--line);
   }
 
   .workspace {
-    height: 72vh;
+    height: 100%;
+    grid-template-rows: 44px minmax(0, 1fr);
   }
+  .mobile-tabs { height: 44px; }
+  .mobile-sources-tab { display: block; }
+  .app-shell[data-mobile-pane="sources"] .sidebar { display: flex; }
+  .app-shell[data-mobile-pane="sources"] .chat-pane,
+  .app-shell[data-mobile-pane="sources"] .viewer-pane { visibility: hidden; }
 
   .messages {
     padding: 24px 18px 18px;
@@ -1017,8 +1031,11 @@ select { border: 1px solid var(--line-strong); border-radius: 8px; background: w
   }
 
   .composer {
-    padding: 12px 14px 14px;
+    padding: 12px 14px max(14px, env(safe-area-inset-bottom));
+    grid-template-columns: minmax(0, 1fr) 44px;
   }
+  .composer textarea { font-size: 16px; }
+  .composer-actions .icon-button, .composer-actions .cancel-generation, .send-button { width: 44px; min-height: 44px; }
 
   .field-row {
     grid-template-columns: 1fr;

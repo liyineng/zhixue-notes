@@ -124,10 +124,11 @@
       </aside>
 
       <main id="workspace" class="workspace">
-        <div class="mobile-tabs">
-          <button class="mobile-tab active" data-pane="chat" type="button">问答</button>
-          <button class="mobile-tab" data-pane="viewer" type="button">原文</button>
-        </div>
+        <nav class="mobile-tabs" aria-label="工作区视图">
+          <button class="mobile-tab mobile-sources-tab" data-pane="sources" aria-pressed="false" type="button">资料与笔记</button>
+          <button class="mobile-tab active" data-pane="chat" aria-pressed="true" type="button">问答</button>
+          <button class="mobile-tab" data-pane="viewer" aria-pressed="false" type="button">原文</button>
+        </nav>
 
         <section class="chat-pane">
           <header class="chat-heading"><strong id="notebook-title">我的课程</strong><div class="chat-actions"><span id="selection-status">正在加载来源</span><button id="undo-chat-delete" type="button" class="button ghost" disabled title="恢复最近删除的问答，最多保留 5 条">撤销删除</button><button id="clear-chat" type="button" class="button ghost">清空对话</button></div></header>

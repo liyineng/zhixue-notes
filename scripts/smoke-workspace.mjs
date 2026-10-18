@@ -121,7 +121,7 @@ db.start_exchange(exchange_id,sys.argv[1],"生成途中刷新")
 print(exchange_id)
 `, notebookId], { encoding: "utf8" }).trim();
   await page.reload({ waitUntil: "networkidle" });
-  await page.locator(".loading-dots").first().waitFor();
+  await page.locator(".generation-progress").first().waitFor();
   assert.equal(await page.locator("#send-button").isDisabled(), true);
   execFileSync(process.env.PYTHON || path.resolve(".venv/bin/python"), ["-c", `
 import sys

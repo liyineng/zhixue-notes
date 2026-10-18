@@ -84,6 +84,8 @@ const emptyChatTemplate = dom.emptyChat.outerHTML;
 let currentNote = null;
 let noteSaving = false;
 let chatPollTimer = null;
+let chatPollFailures = 0;
+let holdChatScroll = false;
 
 const citationPalette = [
   ["#2563eb", "rgba(37,99,235,.19)"], ["#047857", "rgba(5,150,105,.20)"],
@@ -120,10 +122,17 @@ function selectedIds() {
   return state.documents.filter((doc) => state.selectedSources.has(doc.id)).map((doc) => doc.id);
 }
 
+function saveSourceSelection() {
+  localStorage.setItem(`zhixue-sources:${state.notebookId}`, JSON.stringify(selectedIds()));
+}
+
 function selectionStatus() {
   ui["selection-status"].textContent = `已选择 ${selectedIds().length} / ${state.documents.length} 个来源`;
   ui["select-all-sources"].checked = !!state.documents.length && selectedIds().length === state.documents.length;
   ui["select-all-sources"].indeterminate = selectedIds().length > 0 && selectedIds().length < state.documents.length;
+  dom.questionInput.placeholder = selectedIds().length
+    ? '结合已选资料提问，Enter 发送，Shift+Enter 换行'
+    : '输入问题，未勾选资料时按通用知识回答';
   const heading = document.querySelector("#empty-chat h1");
   if (heading) heading.textContent = state.documents.length ? "从这个笔记本开始提问" : "上传资料后开始提问";
 }
@@ -159,6 +168,7 @@ async function switchNotebook(id) {
   if (state.busy) return;
   window.clearTimeout(chatPollTimer);
   state.chatPending = false;
+  state.searchGeneration++;
   state.notebookId = id;
   state.draftImages = [];
   renderDraftImages();
@@ -209,6 +219,7 @@ async function api(path, options = {}) {
       ? data.detail.map((item) => item.msg).join("；")
       : data?.detail || `请求失败：HTTP ${response.status}`;
     const error = new Error(detail);
+    error.status = response.status;
     error.chatId = response.headers.get("X-Chat-Id");
     error.cancelled = response.headers.get('X-Generation-Cancelled') === '1';
     throw error;
@@ -253,6 +264,7 @@ function renderDocuments() {
     icon.setAttribute("aria-label", `选择 ${doc.name}`);
     icon.addEventListener("change", () => {
       if (icon.checked) state.selectedSources.add(doc.id); else state.selectedSources.delete(doc.id);
+      saveSourceSelection();
       selectionStatus();
     });
 
@@ -268,7 +280,7 @@ function renderDocuments() {
     meta.className = "document-meta";
     meta.textContent = `${doc.kind.toUpperCase()} · ${formatBytes(doc.size_bytes)} · ${doc.chunk_count} 个片段`;
     content.append(name, meta);
-    content.addEventListener("click", () => openDocument(doc));
+    content.addEventListener("click", () => openDocument(doc).catch(error => showToast(error.message, true)));
 
     const remove = document.createElement("button");
     remove.type = "button";
@@ -307,10 +319,22 @@ function renderDocuments() {
 }
 
 async function loadDocuments(selectAll = false) {
+  const notebookId = state.notebookId;
   const previous = new Set(state.documents.map((doc) => doc.id));
-  const data = await api(`/api/documents?notebook_id=${encodeURIComponent(state.notebookId)}`);
+  const data = await api(`/api/documents?notebook_id=${encodeURIComponent(notebookId)}`);
+  if (notebookId !== state.notebookId) return;
   state.documents = data.documents || [];
-  state.selectedSources = new Set(state.documents.filter((doc) => selectAll || state.selectedSources.has(doc.id) || !previous.has(doc.id)).map((doc) => doc.id));
+  if (selectAll) {
+    const saved = localStorage.getItem(`zhixue-sources:${notebookId}`);
+    let ids;
+    try { ids = saved === null ? state.documents.map(doc => doc.id) : JSON.parse(saved); }
+    catch (_) { ids = []; }
+    const selected = new Set(Array.isArray(ids) ? ids : []);
+    state.selectedSources = new Set(state.documents.filter(doc => selected.has(doc.id)).map(doc => doc.id));
+  } else {
+    state.selectedSources = new Set(state.documents.filter(doc => state.selectedSources.has(doc.id) || !previous.has(doc.id)).map(doc => doc.id));
+  }
+  saveSourceSelection();
   renderDocuments();
   selectionStatus();
   ui["search-results"].hidden = true;
@@ -373,11 +397,13 @@ async function openDocument(doc) {
     return;
   }
   resetViewer();
+  const generation = state.viewerGeneration;
   setMobilePane("viewer");
   dom.viewerName.textContent = doc.name;
   dom.viewerEmpty.hidden = false;
   dom.viewerScroll.hidden = true;
   const data = await api(`/api/documents/${doc.id}/chunks`);
+  if (generation !== state.viewerGeneration) return;
   dom.sourceText.replaceChildren();
   for (const chunk of data.chunks) {
     const section = document.createElement("section");
@@ -545,6 +571,7 @@ function drawHighlights(viewport) {
 }
 
 function scrollMessages() {
+  if (holdChatScroll) return;
   dom.messages.scrollTop = dom.messages.scrollHeight;
 }
 
@@ -769,6 +796,7 @@ async function pollGenerationProgress(job) {
 }
 
 function startGeneration(question, messageId) {
+  if (innerWidth <= 760) setMobilePane('chat');
   const job = { id: crypto.randomUUID(), notebookId: state.notebookId, controller: new AbortController(), question, cancelled: false };
   job.messageId = messageId;
   state.activeGeneration = job;
@@ -947,7 +975,6 @@ async function askQuestion(question) {
   const images = [...state.draftImages];
   if (!text && !images.length) return;
   if (state.busy) return showToast("请等待当前回答完成。");
-  if (state.documents.length && !selectedIds().length) return showToast("请至少勾选一个来源。", true);
   window.__lastQuestionTerms = extractSearchTerms(text);
   const replyTo = state.replyTo;
   const userId = addMessage("user", text || "请解答图片中的题目，并结合选中的课程资料。", { images, replyTo });
@@ -1061,8 +1088,10 @@ function showCitation(citation, messageId, citationIndex) {
 function setMobilePane(pane) {
   document.querySelectorAll(".mobile-tab").forEach((tab) => {
     tab.classList.toggle("active", tab.dataset.pane === pane);
+    tab.setAttribute('aria-pressed', String(tab.dataset.pane === pane));
   });
   dom.workspace.classList.toggle("show-viewer", pane === "viewer");
+  document.querySelector('.app-shell').dataset.mobilePane = pane;
 }
 
 async function loadSettings() {
@@ -1166,7 +1195,6 @@ dom.dropzone.addEventListener("drop", (event) => uploadFiles(event.dataTransfer.
 dom.askForm.addEventListener("submit", (event) => {
   event.preventDefault();
   if (state.busy) return showToast("请等待当前回答完成。");
-  if (state.documents.length && !selectedIds().length) return showToast("请至少勾选一个来源。", true);
   const question = dom.questionInput.value;
   dom.questionInput.value = "";
   askQuestion(question);
@@ -1246,6 +1274,7 @@ document.querySelectorAll(".mobile-tab").forEach((tab) => {
 });
 
 window.addEventListener("resize", () => {
+  if (innerWidth > 760 && document.querySelector('.app-shell').dataset.mobilePane === 'sources') setMobilePane('chat');
   if (state.pdfDocument) renderPdfPage(state.pdfPage);
 });
 
@@ -1260,23 +1289,68 @@ function setLibraryTab(tab) {
   }
 }
 
+function scheduleChatPoll(notebookId, delay = 1500) {
+  window.clearTimeout(chatPollTimer);
+  chatPollTimer = window.setTimeout(() => {
+    if (notebookId !== state.notebookId || !state.chatPending) return;
+    loadChat(true).catch((error) => {
+      if (notebookId !== state.notebookId || !state.chatPending) return;
+      if (error.status === 404) {
+        state.chatPending = false;
+        state.pendingExchangeId = null;
+        state.pendingExchange = null;
+        setBusy(false);
+        showToast('当前笔记本已不存在，请刷新或切换笔记本。', true);
+        return;
+      }
+      chatPollFailures++;
+      if (chatPollFailures === 1) showToast('状态连接暂时中断，正在自动重试；当前任务仍可能在生成。', true);
+      setBusy(true);
+      scheduleChatPoll(notebookId, Math.min(10000, 1500 * 2 ** Math.min(chatPollFailures, 3)));
+    });
+  }, delay);
+}
+
 async function loadChat(polling = false) {
   window.clearTimeout(chatPollTimer);
   const notebookId = state.notebookId;
   const { exchanges, deleted_count } = await api(`/api/notebooks/${encodeURIComponent(notebookId)}/chat`);
   if (notebookId !== state.notebookId) return;
+  chatPollFailures = 0;
   state.deletedCount = deleted_count || 0;
   updateUndoButton();
-  dom.messages.innerHTML = emptyChatTemplate;
-  state.messageCitations.clear();
-  state.answers.clear();
+  const scrollTop = dom.messages.scrollTop;
+  const nearBottom = dom.messages.scrollHeight - scrollTop - dom.messages.clientHeight < 80;
+  holdChatScroll = polling && !nearBottom;
+  if (!polling) {
+    dom.messages.innerHTML = emptyChatTemplate;
+    state.messageCitations.clear();
+    state.answers.clear();
+  } else {
+    const activeIds = new Set(exchanges.map(exchange => exchange.id));
+    for (const article of dom.messages.querySelectorAll('article[data-exchange-id]')) {
+      if (!activeIds.has(article.dataset.exchangeId)) {
+        state.messageCitations.delete(article.dataset.messageId);
+        state.answers.delete(article.dataset.messageId);
+        article.remove();
+      }
+    }
+  }
   for (const exchange of exchanges) {
-    addMessage("user", exchange.question, { id: `user-${exchange.id}`, images: exchange.images,
-      imageText: exchange.result.image_question_text, imageMode: exchange.result.image_recognition_mode, replyTo: exchange.reply_to });
-    const id = addMessage("assistant", "", { id: exchange.id, loading: true });
+    let article = dom.messages.querySelector(`[data-message-id="${exchange.id}"]`);
+    if (article?.dataset.exchangeStatus === exchange.status && exchange.status !== 'pending') continue;
+    if (!article) {
+      addMessage("user", exchange.question, { id: `user-${exchange.id}`, images: exchange.images,
+        imageText: exchange.result.image_question_text, imageMode: exchange.result.image_recognition_mode, replyTo: exchange.reply_to });
+      addMessage("assistant", "", { id: exchange.id, loading: true });
+      article = dom.messages.querySelector(`[data-message-id="${exchange.id}"]`);
+    }
+    const id = exchange.id;
     if (exchange.status === "complete") {
       const result = exchange.result;
       updateAssistantMessage(id, result.answer, result.citations, result.mode, result.source_mode, { question: exchange.question, coverage: result.summary_coverage });
+      const user = dom.messages.querySelector(`[data-message-id="user-${exchange.id}"]`);
+      if (result.image_question_text && !user.querySelector('.image-recognition')) addRecognizedText(user, result.image_question_text, result.image_recognition_mode);
     } else if (exchange.status === "error") {
       if (exchange.result.cancelled) setAssistantCancelled(id);
       else setAssistantError(id, new Error(exchange.result.detail || "上次请求未完成，请重新提问。"));
@@ -1284,7 +1358,11 @@ async function loadChat(polling = false) {
       renderGenerationProgress(id, exchange.result.progress, exchange.created_at);
     }
     bindExchange(id, `user-${exchange.id}`, exchange.id, exchange.status === "pending");
+    article.dataset.exchangeStatus = exchange.status;
   }
+  holdChatScroll = false;
+  if (polling && !nearBottom) dom.messages.scrollTop = scrollTop;
+  else if (polling) scrollMessages();
   selectionStatus();
   state.chatPending = exchanges.some((exchange) => exchange.status === "pending");
   state.pendingExchange = exchanges.findLast((exchange) => exchange.status === 'pending') || null;
@@ -1292,9 +1370,7 @@ async function loadChat(polling = false) {
   updateCancelButton();
   if (state.chatPending) {
     setBusy(true);
-    chatPollTimer = window.setTimeout(() => {
-      loadChat(true).catch((error) => { state.chatPending = false; setBusy(false); showToast(`恢复对话失败：${error.message}`, true); });
-    }, 1500);
+    scheduleChatPoll(notebookId);
   } else if (polling) setBusy(false);
 }
 
@@ -1450,6 +1526,7 @@ function download(url) {
 }
 
 async function searchSources() {
+  const notebookId = state.notebookId;
   const query = ui["source-search"].value.trim();
   const generation = ++state.searchGeneration;
   if (!query) {
@@ -1461,8 +1538,8 @@ async function searchSources() {
   dom.documentList.hidden = true;
   ui["search-results"].textContent = "正在查找来源…";
   try {
-    const data = await api(`/api/sources/search?notebook_id=${encodeURIComponent(state.notebookId)}&q=${encodeURIComponent(query)}`);
-    if (generation !== state.searchGeneration) return;
+    const data = await api(`/api/sources/search?notebook_id=${encodeURIComponent(notebookId)}&q=${encodeURIComponent(query)}`);
+    if (generation !== state.searchGeneration || notebookId !== state.notebookId) return;
     ui["search-results"].replaceChildren();
     const heading = document.createElement("p");
     heading.className = "search-heading";
@@ -1534,6 +1611,7 @@ ui["sources-tab"].addEventListener("click", () => setLibraryTab("sources"));
 ui["notes-tab"].addEventListener("click", () => setLibraryTab("notes"));
 ui["select-all-sources"].addEventListener("change", (event) => {
   state.selectedSources = new Set(event.target.checked ? state.documents.map((doc) => doc.id) : []);
+  saveSourceSelection();
   renderDocuments();
 });
 ui["source-search-form"].addEventListener("submit", (event) => { event.preventDefault(); searchSources(); });
