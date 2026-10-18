@@ -1,4 +1,5 @@
 import { renderAnswerHtml, matchingSourceLines } from "/static/answer-format.js";
+import renderMathInElement from '/static/vendor/katex/contrib/auto-render.mjs';
 import * as pdfjsLib from "/static/vendor/pdfjs/pdf.mjs";
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = "/static/vendor/pdfjs/pdf.worker.mjs";
@@ -615,6 +616,12 @@ function updateAssistantMessage(messageId, answer, citations, mode, sourceMode, 
   if (!article) return;
   const body = article.querySelector(".message-body");
   body.innerHTML = renderAnswerHtml(answer, citations || []);
+  renderMathInElement(body, {
+    delimiters: [{ left: '$$', right: '$$', display: true }, { left: '\\[', right: '\\]', display: true },
+      { left: '\\(', right: '\\)', display: false }, { left: '$', right: '$', display: false }],
+    throwOnError: false, trust: false, maxExpand: 1000, strict: 'ignore',
+    ignoredClasses: ['citation-ref', 'unavailable-reference'],
+  });
   state.answers.set(messageId, { answer, citations: citations || [], notebook_id: state.notebookId,
     title: article.previousElementSibling?.querySelector(".message-body")?.textContent?.slice(0, 200) || "学习笔记",
     queryTerms: options.question ? extractSearchTerms(options.question) : window.__lastQuestionTerms || [] });
@@ -726,57 +733,26 @@ function renderGenerationProgress(messageId, progress, createdAt) {
   panel.className = 'generation-progress';
   panel.setAttribute('role', 'status');
   panel.setAttribute('aria-live', 'polite');
-  const steps = progress?.steps || [];
-  const list = document.createElement('ol');
-  list.className = 'generation-steps';
-  for (const [index, step] of steps.entries()) {
-    const item = document.createElement('li');
-    const current = index === steps.length - 1;
-    item.className = current ? 'current' : 'completed';
-    if (current) item.setAttribute('aria-current', 'step');
-    item.textContent = step.label;
-    list.append(item);
-  }
-  if (steps.length) panel.append(list);
-  const detail = document.createElement('div');
-  detail.className = 'generation-detail';
-  detail.textContent = progress?.detail || '请求已接收，等待开始处理。';
-  panel.append(detail);
   const activity = progress?.activity;
-  if (activity?.query) {
-    const query = document.createElement('div');
-    query.className = 'generation-query';
-    query.textContent = `检索词：${activity.query}`;
-    panel.append(query);
-  }
-  if (activity?.sources?.length) {
-    const heading = document.createElement('div');
-    heading.className = 'generation-source-heading';
-    const stage = steps.at(-1)?.stage;
-    heading.textContent = ({ sources: '当前检查的资料', retrieval: '检索范围', evidence: '候选原文 · 正在核对', answer: '本次参考资料' })[stage] || '相关资料';
-    if (activity.source_count > activity.sources.length) heading.textContent += ` · 显示 ${activity.sources.length}/${activity.source_count} 份`;
-    const sources = document.createElement('ul');
-    sources.className = 'generation-sources';
-    for (const source of activity.sources) {
-      const row = document.createElement('li');
-      const name = document.createElement('strong');
-      name.textContent = source.name;
-      const location = document.createElement('span');
-      location.textContent = source.pages?.length
-        ? `第 ${source.pages.join('、')} 页${source.page_count > source.pages.length ? ` 等 ${source.page_count} 页` : ''}`
-        : source.fragments ? `${source.fragments} 个文字片段` : '已选来源';
-      row.append(name, location);
-      sources.append(row);
-    }
-    panel.append(heading, sources);
+  const stage = progress?.steps?.at(-1)?.stage;
+  const parts = [progress?.detail || '请求已接收，等待开始处理。'];
+  if (activity?.query) parts.push(`检索词：${activity.query}`);
+  if (stage !== 'sources' && activity?.sources?.length) {
+    const names = activity.sources.slice(0, 3).map(source => {
+      const pages = source.pages?.length ? `第 ${source.pages.join('、')} 页${source.page_count > source.pages.length ? `等 ${source.page_count} 页` : ''}` : '';
+      return `《${source.name}》${pages}`;
+    });
+    const sources = names.join('、') + (activity.source_count > 3 ? `等 ${activity.source_count} 份资料` : '');
+    const action = { evidence: '正在核对', answer: '正在参考', retrieval: '正在检索' }[stage] || '正在读取';
+    parts.unshift(`${action}${sources}`);
   }
   const elapsed = Math.max(0, Math.floor((Date.now() - Date.parse(createdAt)) / 1000));
-  if (Number.isFinite(elapsed)) {
-    const timing = document.createElement('div');
-    timing.className = 'generation-timing';
-    timing.textContent = `已等待 ${elapsed} 秒${elapsed >= 30 ? ' · 当前步骤仍在处理，可继续等待或取消生成。' : ''}`;
-    panel.append(timing);
-  }
+  if (Number.isFinite(elapsed)) parts.push(`已等待 ${elapsed} 秒${elapsed >= 30 ? '，可继续等待或取消' : ''}`);
+  const line = document.createElement('span');
+  line.className = 'generation-detail';
+  line.textContent = parts.join(' · ');
+  panel.title = line.textContent;
+  panel.append(line);
   body.replaceChildren(panel);
 }
 

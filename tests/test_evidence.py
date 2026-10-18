@@ -62,6 +62,14 @@ class EvidenceTests(unittest.TestCase):
         repeated = [(r.chunk['id'], r.score) for r in index.search('自学习 H1 H1 H1 H1')]
         self.assertEqual(once, repeated)
 
+    def test_cjk_citations_are_validated_without_rewriting_math_or_code(self):
+        answer, sources = cited_sources(r'依据【3】，公式 \(x[99]+1\)，代码 `【7】`。',
+                                        [{**self.source(), 'index': 3}])
+        self.assertEqual(answer, r'依据[1]，公式 \(x[99]+1\)，代码 `【7】`。')
+        self.assertEqual([s['index'] for s in sources], [1])
+        with self.assertRaisesRegex(RuntimeError, '不存在'):
+            cited_sources('不存在的依据【9】', [self.source()])
+
 
 if __name__ == '__main__':
     unittest.main()

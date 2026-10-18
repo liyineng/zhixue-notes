@@ -906,22 +906,11 @@ select { border: 1px solid var(--line-strong); border-radius: 8px; background: w
   background: var(--danger);
 }
 
-.generation-progress { padding: 14px 16px; border: 1px solid var(--line); border-radius: 12px; background: #f8fafc; }
-.message-body .generation-steps { list-style: none; padding: 0; margin: 0 0 10px; display: flex; flex-wrap: wrap; gap: 8px 16px; }
-.generation-steps li { display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: 13px; }
-.generation-steps .completed::before { content: '✓'; color: #0f766e; }
-.generation-steps .current { color: #0f766e; font-weight: 600; }
-.generation-steps .current::before { content: ''; width: 12px; height: 12px; border: 2px solid #cbd5e1; border-top-color: #0f766e; border-radius: 50%; animation: generation-spin 1s linear infinite; flex-shrink: 0; }
-.generation-detail { font-size: 14px; line-height: 1.6; }
-.generation-query { margin-top: 8px; color: var(--teal); font-size: 12px; overflow-wrap: anywhere; }
-.generation-source-heading { margin-top: 12px; color: var(--muted); font-size: 11px; }
-.message-body .generation-sources { list-style: none; margin: 5px 0 0; padding: 0; max-height: 180px; overflow-y: auto; }
-.generation-sources li { display: flex; flex-direction: column; gap: 3px; border-left: 2px solid #cbd5e1; padding: 5px 9px; }
-.generation-sources strong { font-size: 12px; font-weight: 500; overflow-wrap: anywhere; }
-.generation-sources span { color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
-.generation-timing { margin-top: 6px; color: var(--muted); font-size: 12px; }
-@keyframes generation-spin { to { transform: rotate(360deg); } }
-@media (prefers-reduced-motion: reduce) { .generation-steps .current::before { animation: none; } }
+.generation-progress { color: var(--muted); font-size: 13px; line-height: 1.7; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.generation-detail { color: inherit; }
+.unavailable-reference { color: var(--muted); font-size: .85em; }
+.answer-math, .message-body .katex-display { max-width: 100%; overflow-x: auto; overflow-y: hidden; }
+.message-body .katex { font-size: 1.05em; }
 
 .loading-dots::after {
   content: "";

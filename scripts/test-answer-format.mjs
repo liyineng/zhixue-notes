@@ -16,4 +16,18 @@ assert.match(html, /&lt;script&gt;/);
 const pipes = renderAnswerHtml('| A | B |\n|---|---|\n| a\\|b | `x|y` |');
 assert.match(pipes, /<td[^>]*>a\|b<\/td>/);
 assert.match(pipes, /<code>x\|y<\/code>/);
+const math = renderAnswerHtml(String.raw`| 公式 | 依据 |
+|---|---|
+| \(x_1 * x_2 + \left|y\right|\) | 【2】 |
+
+\[
+\frac{1}{2}
+\]
+
+无来源【3】`, [{ index: 2 }]);
+assert.equal((math.match(/<td /g) || []).length, 2);
+assert.match(math, /\\\(x_1 \* x_2/);
+assert.match(math, /class="answer-math">\\\[\n\\frac/);
+assert.equal((math.match(/class="citation-ref"/g) || []).length, 1);
+assert.match(math, /3 · 来源缺失/);
 console.log(JSON.stringify({ passed: true, tables: true, orderedLists: true, headings: true, escapedHtml: true, validCitationsOnly: true }));

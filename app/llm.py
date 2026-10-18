@@ -50,6 +50,7 @@ ANSWER_SYSTEM_PROMPT += """
 12. 只使用提供的引用编号。不要罗列与解答无关的检索结果，也不要把所有推导机械地归入通用知识。
 13. 算法、流程和状态变化题须在内部按输入顺序逐步核对：先明确每一步的输入和规则，再更新状态；不得混淆源与目的、请求与响应，不得把未发生的事件作为已知。最终表格须与逐步推导一致。
 14. 近期对话和被引用的旧回答只帮助理解指代，不是资料依据。旧回答可能有误，应核对并纠正；历史引用编号不能充当本次引用。优先回答本次问题，换话题时不要延续无关旧主题。
+15. 资料引用严格使用半角方括号 [1]，不要写成【1】。公式使用 LaTeX 的 \\( ... \\) 或 \\[ ... \\]，不要把公式放进代码块。
 """
 
 SUMMARY_PROMPT = """你是课程资料学习助手。请仅依据用户提供的“资料片段”，生成复习材料。
@@ -142,7 +143,8 @@ async def select_evidence(question: str, candidates: list[dict[str, Any]],
 
 def cited_sources(answer: str, contexts: list[dict[str, Any]]) -> tuple[str, list[dict[str, Any]]]:
     """Return only sources actually cited, with matching contiguous reference numbers."""
-    parts = re.split(r"(```[\s\S]*?```|~~~[\s\S]*?~~~|`+[^`]*`+)", answer)
+    parts = re.split(r"(```[\s\S]*?```|~~~[\s\S]*?~~~|`+[^`]*`+|\\\([\s\S]*?\\\)|\\\[[\s\S]*?\\\]|\$\$[\s\S]*?\$\$|\$[^$\n]+\$)", answer)
+    parts = [re.sub(r'【(\d+)】', r'[\1]', part) if i % 2 == 0 else part for i, part in enumerate(parts)]
     used = {int(n) for part in parts[::2] for n in re.findall(r"\[(\d+)\]", part)}
     allowed = {c["index"] for c in contexts}
     if used - allowed:

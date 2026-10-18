@@ -3,13 +3,19 @@ const escape = (text) => String(text).replace(/[&<>"']/g, (c) => ({
   '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
 }[c]));
 
+const inlineTokens = /(`+[^`]*`+|\\\([\s\S]*?\\\)|\\\[[\s\S]*?\\\]|\$\$[\s\S]*?\$\$|\$[^$\n]+\$)/g;
+const tokenAtStart = new RegExp(`^(?:${inlineTokens.source})`);
+
 function inline(text, references) {
-  return text.split(/(`+[^`]*`+)/g).map((part) => {
+  return text.split(inlineTokens).map((part) => {
     const code = part.match(/^(`+)([\s\S]*?)\1$/);
     if (code) return `<code>${escape(code[2])}</code>`;
+    if (/^(?:\\\(|\\\[|\$)/.test(part)) return escape(part);
     return escape(part)
       .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
       .replace(/\*(?!\*)([^*]+)\*/g, '<em>$1</em>')
+      .replace(/【(\d+)】/g, (whole, number) => references.has(Number(number))
+        ? `[${number}]` : `<span class="unavailable-reference" title="这条历史回答没有保存此编号的来源，无法核对原文">【${number} · 来源缺失】</span>`)
       .replace(/\[(\d+)\]/g, (whole, number) => references.has(Number(number))
         ? `<button class="citation-ref" type="button" data-citation="${number}">[${number}]</button>` : whole);
   }).join('');
@@ -22,6 +28,8 @@ function cells(line) {
   const result = [];
   let cell = '', code = false;
   for (let i = 0; i < text.length; i++) {
+    const token = text.slice(i).match(tokenAtStart);
+    if (token) { cell += token[0]; i += token[0].length - 1; continue; }
     if (text[i] === '\\' && text[i + 1] === '|') { cell += '|'; i++; continue; }
     if (text[i] === '`') code = !code;
     if (text[i] === '|' && !code) { result.push(cell.trim()); cell = ''; }
@@ -42,6 +50,16 @@ export function renderAnswerHtml(text, citations = []) {
   for (let i = 0; i < lines.length;) {
     const line = lines[i].trim();
     if (!line) { i++; continue; }
+    if (line.startsWith('\\[') || line.startsWith('$$')) {
+      const delimiter = line.startsWith('\\[') ? '\\]' : '$$';
+      const math = [lines[i++]];
+      while (math.join('\n').indexOf(delimiter, 2) < 0) {
+        if (i >= lines.length) break;
+        math.push(lines[i++]);
+      }
+      out.push(`<div class="answer-math">${escape(math.join('\n'))}</div>`);
+      continue;
+    }
     const fence = line.match(/^(`{3,}|~{3,})/);
     if (fence) {
       const code = [];
@@ -81,7 +99,7 @@ export function renderAnswerHtml(text, citations = []) {
     if (line.startsWith('> ')) { out.push(`<blockquote>${render(line.slice(2))}</blockquote>`); i++; continue; }
     const paragraph = [line]; i++;
     while (i < lines.length && lines[i].trim() && !tableAt(i) &&
-      !/^\s*(?:#{1,6}\s|[-*+]\s|\d+[.)]\s|`{3,}|~{3,}|>\s)/.test(lines[i])) paragraph.push(lines[i++].trim());
+      !/^\s*(?:#{1,6}\s|[-*+]\s|\d+[.)]\s|`{3,}|~{3,}|>\s|\\\[|\$\$)/.test(lines[i])) paragraph.push(lines[i++].trim());
     out.push(`<p>${paragraph.map(render).join('<br>')}</p>`);
   }
   return out.join('');
