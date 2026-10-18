@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import mimetypes
+import asyncio
+from contextlib import suppress
 import re
 import time
 from contextlib import asynccontextmanager
@@ -15,7 +17,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
-from . import db, generation
+from . import db, generation, cloud_sync
 from .conversation import MAX_TURNS, MAX_CONTEXT_CHARS, recent_context, referenced_sources
 from .progress import source_activity
 from .summaries import summary_batches
@@ -78,7 +80,13 @@ async def _ensure_source_images(documents: list[dict[str, Any]], settings: dict[
 async def lifespan(_: FastAPI):
     ensure_directories()
     db.init_db()
-    yield
+    sync_task = asyncio.create_task(cloud_sync.auto_sync(_invalidate_index))
+    try:
+        yield
+    finally:
+        sync_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await sync_task
 
 
 app = FastAPI(
@@ -232,6 +240,49 @@ def _summary_contexts(
             }
         )
     return contexts
+
+
+class SyncConfigRequest(BaseModel):
+    enabled: bool
+
+
+class SyncResolveRequest(BaseModel):
+    key: str = Field(max_length=300)
+    version: str = Field(pattern=r'^[a-f0-9]{64}$')
+    keep_both: bool = False
+
+
+@app.get('/api/sync')
+def sync_status() -> dict[str, Any]:
+    return cloud_sync.status()
+
+
+@app.put('/api/sync')
+def configure_sync(payload: SyncConfigRequest) -> dict[str, Any]:
+    try:
+        return cloud_sync.configure(payload.enabled)
+    except cloud_sync.SyncError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+@app.post('/api/sync/run')
+def run_sync() -> dict[str, Any]:
+    try:
+        result = cloud_sync.sync()
+        _invalidate_index()
+        return result
+    except cloud_sync.SyncError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+
+
+@app.post('/api/sync/resolve')
+def resolve_sync(payload: SyncResolveRequest) -> dict[str, Any]:
+    try:
+        result = cloud_sync.resolve(payload.key, payload.version, payload.keep_both)
+        _invalidate_index()
+        return result
+    except cloud_sync.SyncError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
 
 
 @app.get("/api/health")

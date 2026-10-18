@@ -1,4 +1,5 @@
 import { renderAnswerHtml, matchingSourceLines } from "/static/answer-format.js";
+import { initializeCloudSync } from '/static/cloud-sync.js';
 import renderMathInElement from '/static/vendor/katex/contrib/auto-render.mjs';
 import * as pdfjsLib from "/static/vendor/pdfjs/pdf.mjs";
 
@@ -1354,7 +1355,8 @@ async function loadChat(polling = false) {
   }
   for (const exchange of exchanges) {
     let article = dom.messages.querySelector(`[data-message-id="${exchange.id}"]`);
-    if (article?.dataset.exchangeStatus === exchange.status && exchange.status !== 'pending') continue;
+    const signature = JSON.stringify(exchange);
+    if (article?.dataset.exchangeStatus === exchange.status && exchange.status !== 'pending' && article.dataset.exchangeSignature === signature) continue;
     if (!article) {
       addMessage("user", exchange.question, { id: `user-${exchange.id}`, images: exchange.images,
         imageText: exchange.result.image_question_text, imageMode: exchange.result.image_recognition_mode, replyTo: exchange.reply_to });
@@ -1375,6 +1377,7 @@ async function loadChat(polling = false) {
     }
     bindExchange(id, `user-${exchange.id}`, exchange.id, exchange.status === "pending");
     article.dataset.exchangeStatus = exchange.status;
+    article.dataset.exchangeSignature = signature;
   }
   holdChatScroll = false;
   if (polling && !nearBottom) dom.messages.scrollTop = scrollTop;
@@ -1683,3 +1686,16 @@ async function initialize() {
 }
 
 initialize();
+
+initializeCloudSync({ api, jsonOptions, showToast, refresh: async () => {
+  if (state.busy || dom.questionInput.value || state.draftImages.length || state.replyTo ||
+      document.querySelector('dialog[open]:not(#sync-dialog)')) return false;
+  const notebook = state.notebookId;
+  setBusy(true);
+  try {
+    await loadNotebooks();
+    if (notebook !== state.notebookId) resetViewer();
+    await Promise.all([loadDocuments(true), loadNotes(), loadChat(true)]);
+    return true;
+  } finally { setBusy(state.chatPending); }
+} });

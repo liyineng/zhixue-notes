@@ -85,6 +85,8 @@
           </button>
         </div>
 
+        <button id="sync-button" class="sync-button" type="button">☁ iCloud 同步 · 未开启</button>
+
         <button id="dropzone" class="dropzone" type="button">
           <svg class="icon"><use href="#i-upload"></use></svg>
           <span>拖拽 PDF、PPTX、DOCX 或 Markdown</span>
@@ -208,6 +210,23 @@
         </section>
       </main>
     </div>
+
+    <dialog id="sync-dialog" class="settings-dialog sync-dialog" aria-labelledby="sync-title">
+      <div class="dialog-heading">
+        <div><h2 id="sync-title">iCloud 双向同步</h2><p>资料、笔记、问答及题目图片，在自己的 Mac 之间合并。</p></div>
+        <button id="close-sync" class="icon-button" type="button" aria-label="关闭同步窗口">×</button>
+      </div>
+      <label class="sync-switch"><input id="sync-enabled" type="checkbox" />开启自动同步（应用运行时每分钟检查）</label>
+      <p id="sync-status" class="settings-note" role="status" aria-live="polite"></p>
+      <details class="sync-help"><summary>其他设备如何连接</summary>
+        <p>在另一台 Mac 登录相同的 Apple 账户，开启 iCloud Drive，运行新版智学笔记，再开启这里的同步。两台设备分别使用自己的本地安装和数据库。</p>
+        <p>同一条内容同时修改时保留两个版本，在下方选择。笔记也可保留为多份。模型设置和 API 密钥各设备单独配置。</p>
+        <p>iCloud 文件传输由 macOS 完成；这里的完成时间仅表示本机合并及写入完成。附件未下载完整时会等待重试。关闭同步保留两边数据。</p>
+        <p>Finder 中的同步目录：<span id="sync-folder"></span></p>
+      </details>
+      <div id="sync-conflicts"></div>
+      <div class="dialog-actions"><button id="sync-now" class="button primary" type="button">立即同步</button></div>
+    </dialog>
 
     <dialog id="settings-dialog" class="settings-dialog">
       <form id="settings-form" method="dialog">
