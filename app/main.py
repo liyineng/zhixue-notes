@@ -18,6 +18,7 @@ from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
 from . import db, generation, cloud_sync
+from .previews import presentation_pdf, PreviewError
 from .conversation import MAX_TURNS, MAX_CONTEXT_CHARS, recent_context, referenced_sources
 from .progress import source_activity
 from .summaries import summary_batches
@@ -91,7 +92,7 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(
     title="智学笔记 API",
-    version="0.3.0",
+    version="0.3.1",
     lifespan=lifespan,
 )
 
@@ -470,6 +471,23 @@ def document_file(document_id: str) -> FileResponse:
         filename=document["name"],
         content_disposition_type="inline",
     )
+
+
+@app.get('/api/documents/{document_id}/preview')
+def document_preview(document_id: str) -> FileResponse:
+    document = db.get_document(document_id)
+    if not document:
+        raise HTTPException(status_code=404, detail='资料不存在。')
+    if document['kind'] == 'pdf':
+        return document_file(document_id)
+    if document['kind'] != 'pptx':
+        raise HTTPException(status_code=400, detail='此格式暂不支持原页预览。')
+    try:
+        path = presentation_pdf(document)
+    except PreviewError as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+    return FileResponse(path, media_type='application/pdf', content_disposition_type='inline',
+                        filename=Path(document['name']).stem + '.pdf')
 
 
 @app.patch("/api/documents/{document_id}")

@@ -16,3 +16,6 @@ output/
 *.pptx
 .env
 .env.*
+
+# Personal course proposal, retained locally only
+/选题说明.md

@@ -1,1 +1,12 @@
 app/static/vendor/** linguist-vendored
+
+# GitHub's automatic Source code archives omit development/course paperwork.
+AGENTS.md export-ignore
+选题说明.md export-ignore
+tests export-ignore
+scripts export-ignore
+distribution export-ignore
+.github export-ignore
+*.bat text eol=crlf
+*.command text eol=lf
+*.sh text eol=lf

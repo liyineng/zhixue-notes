@@ -20,6 +20,7 @@ const state = {
   pdfDocument: null,
   pdfLoadingTask: null,
   pdfDocumentId: null,
+  viewerDocumentId: null,
   pdfPageCount: 0,
   pdfPage: 1,
   highlightLines: [],
@@ -375,6 +376,7 @@ function resetViewer() {
   state.pdfLoadingTask = null;
   state.pdfDocument = null;
   state.pdfDocumentId = null;
+  state.viewerDocumentId = null;
   state.pdfPageCount = 0;
   state.pdfPage = 1;
   state.highlightLines = [];
@@ -384,6 +386,7 @@ function resetViewer() {
   dom.canvas.width = 0;
   dom.canvas.height = 0;
   dom.viewerEmpty.hidden = false;
+  dom.viewerEmpty.querySelector('p').textContent = '点击回答中的引用编号，原文会在这里定位。';
   dom.viewerScroll.hidden = true;
   dom.viewerName.textContent = "尚未打开资料";
   dom.pageTotal.textContent = "/ 0";
@@ -392,12 +395,17 @@ function resetViewer() {
 }
 
 async function openDocument(doc) {
-  if (doc.kind === "pdf") {
+  if (["pdf", "pptx"].includes(doc.kind)) {
     setMobilePane("viewer");
     await openPdf(doc.id, 1, []);
     return;
   }
+  await openTextDocument(doc);
+}
+
+async function openTextDocument(doc, errorMessage = '') {
   resetViewer();
+  state.viewerDocumentId = doc.id;
   const generation = state.viewerGeneration;
   setMobilePane("viewer");
   dom.viewerName.textContent = doc.name;
@@ -406,6 +414,13 @@ async function openDocument(doc) {
   const data = await api(`/api/documents/${doc.id}/chunks`);
   if (generation !== state.viewerGeneration) return;
   dom.sourceText.replaceChildren();
+  if (errorMessage) {
+    const warning = document.createElement('p');
+    warning.className = 'preview-warning';
+    warning.textContent = errorMessage;
+    dom.sourceText.append(warning);
+    dom.viewerEmpty.querySelector('p').textContent = '原页预览暂不可用，下方可查看提取文字；右上角可下载原文件。';
+  }
   for (const chunk of data.chunks) {
     const section = document.createElement("section");
     section.className = "source-chunk";
@@ -426,9 +441,11 @@ async function openPdf(documentId, pageNumber, lines = []) {
     return;
   }
   state.highlightLines = lines || [];
+  state.viewerDocumentId = documentId;
   dom.viewerName.textContent = doc.name;
-  dom.viewerEmpty.hidden = true;
-  dom.viewerScroll.hidden = false;
+  dom.viewerEmpty.hidden = doc.kind !== 'pptx';
+  dom.viewerScroll.hidden = doc.kind === 'pptx';
+  if (doc.kind === 'pptx') dom.viewerEmpty.querySelector('p').textContent = '正在生成课件原页预览，首次打开可能需要一点时间…';
 
   try {
     if (state.pdfDocumentId !== documentId || !state.pdfDocument) {
@@ -442,8 +459,19 @@ async function openPdf(documentId, pageNumber, lines = []) {
       state.pdfLoadingTask?.destroy().catch(() => {});
       state.pdfDocument = null;
       state.pdfDocumentId = documentId;
+      let input = { url: `/api/documents/${documentId}/file` };
+      if (doc.kind === 'pptx') {
+        const response = await fetch(`/api/documents/${documentId}/preview`);
+        if (!response.ok) {
+          const detail = await response.json().catch(() => ({}));
+          throw new Error(detail.detail || '课件预览暂不可用。');
+        }
+        const data = new Uint8Array(await response.arrayBuffer());
+        if (generation !== state.viewerGeneration) return;
+        input = { data };
+      }
       const loadingTask = pdfjsLib.getDocument({
-        url: `/api/documents/${documentId}/file`,
+        ...input,
         cMapUrl: "/static/vendor/pdfjs/cmaps/",
         cMapPacked: true,
         iccUrl: "/static/vendor/pdfjs/iccs/",
@@ -457,11 +485,19 @@ async function openPdf(documentId, pageNumber, lines = []) {
       state.pdfPageCount = state.pdfDocument.numPages;
       dom.pageTotal.textContent = `/ ${state.pdfPageCount}`;
     }
+    dom.viewerEmpty.hidden = true;
+    dom.viewerScroll.hidden = false;
     await renderPdfPage(pageNumber);
   } catch (error) {
     if (generation !== state.viewerGeneration) return;
+    if (doc.kind === 'pptx') {
+      await openTextDocument(doc, error.message);
+      return;
+    }
     console.error("PDF preview failed", error);
     resetViewer();
+    state.viewerDocumentId = documentId;
+    dom.viewerName.textContent = doc.name;
     dom.sourceText.textContent = `PDF 预览加载失败：${error.message}`;
     showToast("PDF 预览加载失败，可使用右上角按钮在新窗口打开。", true);
   }
@@ -1061,7 +1097,7 @@ function plainSourceText(citation) {
 }
 
 function showCitation(citation, messageId, citationIndex) {
-  if (citation.document_kind !== "pdf") resetViewer();
+  if (!["pdf", "pptx"].includes(citation.document_kind)) resetViewer();
   state.activeCitation = Number(citationIndex);
   state.highlightMessageId = messageId;
   colorCitation(dom.sourceText, citationIndex);
@@ -1069,7 +1105,7 @@ function showCitation(citation, messageId, citationIndex) {
     <strong class="source-citation-label">[${Number(citationIndex)}] ${escapeHtml(citation.document_name)}${citation.page ? ` · 第 ${citation.page} 页` : ""}</strong><br />
     ${plainSourceText(citation)}
   `;
-  if (citation.document_kind === "pdf") {
+  if (["pdf", "pptx"].includes(citation.document_kind)) {
     setMobilePane("viewer");
     const terms = (citation.queryTerms || []).filter((term) => term.length >= 2);
     const relevantLines = (ref) => {
@@ -1095,6 +1131,7 @@ function showCitation(citation, messageId, citationIndex) {
     dom.viewerEmpty.hidden = false;
     dom.viewerScroll.hidden = true;
     dom.viewerName.textContent = citation.document_name;
+    state.viewerDocumentId = citation.document_id;
   }
   const article = dom.messages.querySelector(`[data-message-id="${messageId}"]`);
   article?.querySelectorAll(".citation-card").forEach((item) => {
@@ -1278,9 +1315,9 @@ dom.prevPage.addEventListener("click", () => renderPdfPage(state.pdfPage - 1));
 dom.nextPage.addEventListener("click", () => renderPdfPage(state.pdfPage + 1));
 dom.pageInput.addEventListener("change", () => renderPdfPage(dom.pageInput.value));
 dom.openFile.addEventListener("click", () => {
-  if (!state.pdfDocumentId) return;
+  if (!state.viewerDocumentId) return;
   window.open(
-    `/api/documents/${state.pdfDocumentId}/file#page=${state.pdfPage}`,
+    `/api/documents/${state.viewerDocumentId}/file#page=${state.pdfPage}`,
     "_blank",
     "noopener"
   );

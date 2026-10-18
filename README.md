@@ -4,11 +4,18 @@
 
 ## 下载发行版
 
-在 [GitHub Releases](https://github.com/liyineng/zhixue-notes/releases/latest) 下载 `zhixue-notes-v0.3.0.zip`。这是干净的程序包，不包含作者的对话、笔记、课程资料、数据库、模型设置或 API 密钥。首次启动创建空白工作区，iCloud 同步默认关闭。
+在 [GitHub Releases](https://github.com/liyineng/zhixue-notes/releases/latest) 的 **Assets** 中按系统下载：
 
-需要先安装 **Python 3.11 或更新版本**；解压后在终端进入文件夹，运行 `bash run.sh`，再打开 `http://127.0.0.1:8765`。首次运行会联网安装依赖，模型接口需自行配置。此 ZIP 包含 Python 程序与网页资源，没有内置 Python，也不是 macOS `.app` 安装包。默认本机 OCR 另需 Tesseract 和中文/英文语言包；也可配置视觉模型。
+- **Mac**：`zhixue-notes-v0.3.1-macos.zip`，完整解压后双击 `start.command`；终端也可运行 `bash start.command`。
+- **Windows**：`zhixue-notes-v0.3.1-windows.zip`，右键“全部解压”后双击 `start.bat`，不需要运行 `./run.sh`。失败时在命令提示符中运行 `start.bat --check` 查看完整报错。
 
-更新已有安装前，请先备份原来的 `data/`，不要删除或覆盖其中的资料。新用户无需复制任何 `data/` 文件。
+两版都需要先安装 **Python 3.11 或更新版本**，首次运行联网安装依赖，然后自动打开浏览器。运行期间保持启动窗口开启。程序包未内置 Python，不是免安装的 `.app` / `.exe`。
+
+程序 ZIP 只含程序、对应系统的启动入口、简明使用说明和第三方许可证；不含作者的对话、笔记、课程资料、数据库、模型设置或 API 密钥，首次启动创建空白工作区。iCloud 同步默认关闭，目前面向 Mac。更新已有安装前，请先备份并保留自己的 `data/`。
+
+请下载上面对应系统的 ZIP。GitHub 自动附带的 **Source code** 是源码归档，不是发行程序包；新版本的源码归档也已排除选题说明和开发用说明/测试目录，个人课程文件保留在本机。旧版本的 Source code 是其历史提交快照。
+
+PPTX 原页预览需要安装 [LibreOffice](https://www.libreoffice.org/download/download-libreoffice/)，程序自动检测 Mac 默认安装目录或 Windows 的 `Program Files/LibreOffice/program`，也支持 PATH 中的 `soffice`。首次打开在本机转换为 PDF，校验页数并缓存，之后可翻页和按引用跳到对应幻灯片；原课件和已有索引不变。未安装或转换失败时显示原因，仍可看提取文字及下载原文件。默认本机 OCR 另需 Tesseract 中文/英文语言包，也可配置视觉模型。
 
 模型可插拔的课程资料学习助手。第一版已经可以本机运行，完成以下闭环：
 
@@ -23,7 +30,7 @@
 
 - **按课程建笔记本**：左上角选择笔记本，点击 `＋` 新建，`✎` 重命名。默认笔记本可重命名，空笔记本可删除。原来的资料会自动归入“我的课程”。
 - **选择问答范围**：资料前的复选框决定问答和复习提纲使用哪些来源。不同笔记本的来源分别检索，空笔记本不会检索其他课程的资料。
-- **查找来源**：在“资料来源”输入文件名或原文关键词，点击查找。搜索当前笔记本中的文件名和原文片段，点击结果可查看原文，PDF 可跳页与高亮。DOCX、PPTX、Markdown、TXT 可浏览解析后的文本。
+- **查找来源**：在“资料来源”输入文件名或原文关键词，点击查找。搜索当前笔记本中的文件名和原文片段，点击结果可查看原文，PDF 可跳页与高亮。PPTX 可预览原始幻灯片（需 LibreOffice）；DOCX、Markdown、TXT 可浏览解析后的文本。
 - 搜索结果会显示匹配内容所在的页码，摘要优先展示完整查询词附近的原文，兼容之前导入的跨页片段。
 - **移动资料**：文件旁点击“移动”，选择另一个笔记本。文件只保留一份，原来的笔记仍保留保存时的引用快照。
 - **保存回答**：点击回答下面的“保存为笔记”，正文与来源引用一起保存。“我的笔记”可以打开、修改、删除，也可新建手写笔记。
@@ -175,7 +182,7 @@ PDF 中缺少可用文字层、以图片为主体的页面会自动补充识别�
 
 ## 验证
 
-发行包通过 `python3 scripts/build-release.py --version 0.3.0` 从指定 Git 提交生成，只包含固定清单中的程序、说明与启动文件，输出到忽略的 `artifacts/releases/`。不会读取或打包本地 `data/`、环境、附件及密钥文件。
+发行包通过 `python3 scripts/build-release.py --version 0.3.1 --platform all` 从指定 Git 提交生成，分别生成 macos/windows ZIP，只包含固定清单中的程序、对应系统的使用说明与启动文件，输出到忽略的 `artifacts/releases/`。不会读取或打包本地 `data/`、环境、附件及密钥文件。
 
 ```bash
 .venv/bin/python -m unittest discover -s tests -v

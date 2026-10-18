@@ -1,0 +1,71 @@
+// Mocked notebook + preview response: never uploads fixtures or creates user data.
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { execFileSync } from 'node:child_process';
+import { pathToFileURL } from 'node:url';
+const modules = process.env.PLAYWRIGHT_MODULES || path.join(os.homedir(), '.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules');
+const { chromium } = await import(pathToFileURL(path.join(modules, 'playwright/index.mjs')).href);
+const browser = await chromium.launch({ headless: true });
+const page = await browser.newPage({ viewport: { width: 1440, height: 960 } });
+const base = process.env.APP_URL || 'http://127.0.0.1:8765';
+const output = path.resolve('artifacts/presentation-preview');
+await fs.mkdir(output, { recursive: true });
+const pdf = execFileSync(process.env.PYTHON || path.resolve('.venv/bin/python'), ['-c', `
+import sys,pymupdf
+with pymupdf.open() as pdf:
+ for label in ['SLIDE ONE', 'SLIDE TWO']:
+  page=pdf.new_page(width=720,height=405)
+  page.insert_text((60,90),label,fontsize=30)
+ sys.stdout.buffer.write(pdf.tobytes())
+`]);
+let fail = false;
+let delayed = null;
+const doc = { id: 'preview-fixture', name: 'preview-fixture.pptx', kind: 'pptx', notebook_id: 'default', page_count: 2, chunk_count: 2, size_bytes: 1000 };
+await page.route('**/api/notebooks', route => route.fulfill({ json: { notebooks: [{ id: 'default', name: 'Preview tests', document_count: 1 }] } }));
+await page.route('**/api/documents?*', route => route.fulfill({ json: { documents: [doc] } }));
+await page.route('**/api/sync', route => route.fulfill({ json: { enabled: false, available: false, conflicts: [], revision: '', folder: '' } }));
+await page.route('**/api/notebooks/default/chat', route => route.fulfill({ json: { exchanges: [{
+  id: 'preview-chat', question: 'Explain the second slide', status: 'complete', created_at: '2026-01-01', images: [], reply_to: {},
+  result: { answer: 'Slide two [1].', mode: 'model', source_mode: 'knowledge_base', citations: [{
+    index: 1, document_id: doc.id, document_name: doc.name, document_kind: 'pptx', page: 2, text: 'Second slide', lines: [{ page: 2, text: 'Second slide', bbox: null }],
+  }] },
+}], deleted_count: 0 } }));
+await page.route('**/api/documents/preview-fixture/chunks', route => route.fulfill({ json: { chunks: [{ page: 1, text: 'Extracted slide text', index: 1 }] } }));
+await page.route('**/api/documents/preview-fixture/preview', async route => {
+  if (delayed) await delayed;
+  if (fail) await route.fulfill({ status: 503, json: { detail: 'PPT 原页预览需要安装 LibreOffice。' } });
+  else await route.fulfill({ contentType: 'application/pdf', body: pdf });
+});
+const errors = [];
+page.on('pageerror', error => errors.push(error.message));
+try {
+  await page.goto(base, { waitUntil: 'networkidle' });
+  await page.locator('.document-name').click();
+  await page.waitForFunction(() => document.querySelector('#page-total').textContent === '/ 2');
+  await page.locator('#next-page').click();
+  await page.waitForFunction(() => document.querySelector('#page-input').value === '2');
+  assert(await page.locator('#pdf-canvas').evaluate(canvas => canvas.width > 0));
+  await page.locator('#prev-page').click();
+  await page.locator('.citation-ref').first().click();
+  await page.waitForFunction(() => document.querySelector('#page-input').value === '2');
+  await page.screenshot({ path: path.join(output, 'preview.png') });
+  // Force a fresh load so a missing converter can be simulated independently.
+  fail = true;
+  await page.reload({ waitUntil: 'networkidle' });
+  await page.locator('.document-name').click();
+  await page.locator('.preview-warning').waitFor();
+  assert.match(await page.locator('.preview-warning').innerText(), /LibreOffice/);
+  assert.match(await page.locator('#source-text').innerText(), /Extracted slide text/);
+  const popupPromise = page.waitForEvent('popup');
+  await page.locator('#open-file').click();
+  const popup = await popupPromise;
+  assert.match(popup.url(), /\/api\/documents\/preview-fixture\/file/);
+  await popup.close();
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.screenshot({ path: path.join(output, 'fallback-mobile.png') });
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+  assert.deepEqual(errors, []);
+  console.log('PPT preview, paging, converter fallback, original download and mobile layout passed.');
+} finally { await browser.close(); }
