@@ -1,0 +1,29 @@
+"""Bounded recent dialogue for resolving follow-up questions, never source evidence."""
+import re
+
+MAX_TURNS = 3
+MAX_TURN_CHARS = 2000
+MAX_CONTEXT_CHARS = MAX_TURNS * MAX_TURN_CHARS
+
+
+def _clip(text: str, limit: int) -> str:
+    if len(text) <= limit:
+        return text
+    marker = '\n…（上下文已截短）…\n'
+    remaining = limit - len(marker)
+    return text[:remaining * 2 // 3] + marker + text[-(remaining - remaining * 2 // 3):]
+
+
+def recent_context(exchanges: list[dict]) -> tuple[str, int]:
+    blocks = []
+    for exchange in exchanges[-MAX_TURNS:]:
+        result = exchange['result']
+        # Old citation numbers must not masquerade as fresh source evidence.
+        answer = re.sub(r'\[(\d+)\]', r'【历史引用\1】', result.get('answer', ''))
+        block = f"原问题：{_clip(exchange['question'], 500)}\n"
+        image_text = result.get('image_question_text', '')
+        if image_text:
+            block += f"原题目图片识别内容：{_clip(image_text, 400)}\n"
+        block += '原回答：\n' + _clip(answer, MAX_TURN_CHARS - len(block) - len('原回答：\n\n\n'))
+        blocks.append(block)
+    return '\n\n'.join(blocks), len(blocks)

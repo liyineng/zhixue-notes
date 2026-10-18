@@ -20,7 +20,7 @@ class FollowupCancelTests(unittest.TestCase):
             'image_question_text': '原图片题干包含两个主机', 'citations': [{'index': 7}]}, error=error)
         return identity
 
-    def test_quote_is_explicit_scoped_and_saved_as_snapshot_without_automatic_history(self):
+    def test_quote_has_priority_and_is_saved_as_snapshot(self):
         notebook = self.notebook('引用追问')
         parent = self.parent(notebook)
         db.start_exchange('unrelated', notebook, '无关旧问题')
@@ -42,7 +42,9 @@ class FollowupCancelTests(unittest.TestCase):
         self.assertNotIn('[7]', questions[0])
         self.assertIn('原图片题干包含两个主机', questions[0])
         self.assertNotIn('绝不能自动发给模型', questions[0])
-        self.assertEqual(questions[1], '独立的新问题')
+        self.assertIn('本次问题：独立的新问题', questions[1])
+        self.assertIn('进一步解释', questions[1])
+        self.assertEqual(questions[0].count('原回答：使用序号去重'), 1)
         reply = db.get_exchange(notebook, result.json()['chat_id'])
         self.assertEqual(reply['reply_to']['id'], parent)
         self.client.delete(f'/api/notebooks/{notebook}/chat/{parent}')

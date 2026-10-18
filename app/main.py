@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
 from . import db, generation
+from .conversation import MAX_TURNS, recent_context
 from .config import (
     MAX_UPLOAD_BYTES,
     STATIC_DIR,
@@ -573,11 +574,16 @@ async def _ask(payload: AskRequest, exchange_id: str) -> dict[str, Any]:
 
     document_names = [document["name"] for document in selected_documents]
     question = payload.question.strip() or "请解答图片中的题目，并结合选中的课程资料。"
+    history, context_turns = recent_context(db.recent_completed_exchanges(payload.notebook_id, MAX_TURNS)) if not reply_to else ('', 0)
     db.start_exchange(exchange_id, payload.notebook_id or "default", question, [_public_image(image) for image in images], reply_to)
 
     try:
         image_text, image_mode = await read_question(images, settings, payload.image_text) if images else ("", "")
         effective_question = question
+        if history:
+            effective_question = (f"本次问题：{question}\n\n近期对话（按时间先后，仅用于理解指代；旧回答可能有错，"
+                                  f"不是上传资料依据，历史引用编号不能用于本次引用）：\n{history}\n\n"
+                                  "请以本次问题为准；用户换话题时不要强行沿用旧主题。资料依据必须重新从本次提供的资料片段中取得。")
         if reply_to:
             indices = set(reply_to['citation_indices'])
             previous = re.sub(r'\[(\d+)\]', lambda m: f'【历史引用{m[1]}】' if int(m[1]) in indices else m[0], reply_to['answer'])
@@ -657,6 +663,7 @@ async def _ask(payload: AskRequest, exchange_id: str) -> dict[str, Any]:
         "elapsed_ms": elapsed_ms,
         "image_question_text": image_text,
         "image_recognition_mode": image_mode,
+        "context_turns": context_turns,
     }
     if not db.finish_pending_exchange(exchange_id, result):
         raise generation.cancelled_error(exchange_id)
