@@ -16,6 +16,8 @@ const docs = [{ id: 'course', name: 'L02-谐振回路.md', kind: 'md', page_coun
   { id: 'other', name: 'L03-放大电路.md', kind: 'md', page_count: 1, chunk_count: 1, size_bytes: 300 }];
 let exchanges = [], deleted = [], configuration, summaryConfiguration;
 const citation = { index: 1, document_id: 'course', document_kind: 'md', document_name: docs[0].name, page: null, text: '串联谐振时，感抗与容抗抵消。', lines: [] };
+exchanges.push({ id: 'fixture-conversation', status: 'complete', question: '解释串联谐振', images: [], reply_to: {}, created_at: '2026-01-01',
+  result: { answer: '## 章节复习\n\n串联谐振时感抗与容抗抵消，回路呈纯电阻性。[1]', citations: [citation], mode: 'model', source_mode: 'knowledge_base' } });
 const quizResult = id => ({ chat_id: id, answer: '已生成 2 道测验。', mode: 'model', source_mode: 'knowledge_base', citations: [citation], warnings: [], quiz: {
   topic: '第二章：谐振回路', requested_count: 5, difficulty: 'hard', language: 'zh-CN', attempt: 1, answers: {}, questions: [
     { id: 'q1', prompt: '串联谐振时，下列哪个说法正确？', options: ['感抗与容抗抵消', '电感为零', '电容为零', '电阻为零'], answer: 0,
@@ -112,8 +114,24 @@ try {
   await page.locator('#sidebar-resizer').dblclick(); await page.locator('#workspace-resizer').dblclick();
   assert.equal(Math.round((await sidebar.boundingBox()).width), 276);
   await page.screenshot({ path: path.join(output, 'application-library-desktop.png') });
+  const conversation = page.locator('article[data-message-id="fixture-conversation"]');
+  await conversation.evaluate(element => element.dataset.preserved = 'yes');
+  await conversation.locator('details').first().evaluate(element => element.open = true);
+  await page.locator('#question-input').fill('还没有发送的追问');
   await page.locator('.application-open').click();
-  await page.waitForURL('**/quiz/**'); await page.locator('.quiz-card').waitFor();
+  await page.locator('.quiz-card').waitFor();
+  assert(!new URL(page.url()).pathname.startsWith('/quiz/'));
+  assert.equal(await conversation.getAttribute('data-preserved'), 'yes');
+  assert.equal(await conversation.locator('details').first().evaluate(element => element.open), true);
+  assert.equal(await page.locator('#question-input').inputValue(), '还没有发送的追问');
+  assert.equal(await page.locator('.chat-pane').isVisible(), true);
+  assert.equal(await page.locator('.sidebar').isVisible(), true);
+  await page.locator('#question-input').fill('');
+  await page.locator('#right-document-tab').click();
+  assert.equal(await page.locator('#viewer-document').isVisible(), true);
+  assert.equal(await page.locator('#quiz-workspace').isVisible(), false);
+  await page.locator('#right-quiz-tab').click();
+  assert.equal(await page.locator('#quiz-workspace').isVisible(), true);
   assert.equal(await page.locator('.quiz-explanation').count(), 0);
   assert.equal(await page.locator('.quiz-check').isDisabled(), true);
   await page.locator('.quiz-option').nth(1).click();
@@ -121,7 +139,7 @@ try {
   await page.locator('.quiz-feedback.is-incorrect').waitFor();
   assert.match(await page.locator('.quiz-status').innerText(), /已答 1 \/ 2.*答对 0/);
   await page.locator('.quiz-source').click();
-  await page.waitForFunction(() => document.querySelector('#quiz-source-text').textContent.includes('感抗与容抗抵消'));
+  await page.waitForFunction(() => document.querySelector('#quiz-panel-source-text').textContent.includes('感抗与容抗抵消'));
   await page.locator('.quiz-navigation button', { hasText: '下一题' }).click();
   assert.equal(await page.locator('.quiz-option .katex').count(), 4);
   assert.equal(await page.locator('.katex-error').count(), 0);
@@ -140,9 +158,9 @@ try {
   await page.waitForFunction(() => document.querySelector('.quiz-status').textContent.includes('已答 0'));
   assert.equal(await page.locator('.quiz-feedback').count(), 0);
   assert.match(await page.locator('.quiz-question-number').innerText(), /第 1/);
-  await page.locator('#quiz-back').click();
-  await page.locator('.application-card').waitFor();
+  await page.locator('#close-quiz-panel').click();
   await page.locator('[data-pane="sources"]').click();
+  await page.locator('.application-card').waitFor();
   assert.match(await page.locator('.application-status').innerText(), /已答 0/);
   assert.equal(await page.locator('#sidebar-resizer').isVisible(), false);
   assert.equal(await page.locator('#workspace-resizer').isVisible(), false);
@@ -166,7 +184,7 @@ try {
   assert.deepEqual(errors, []);
   console.log(JSON.stringify({ passed: true, settings: true, selectedSourcesOnly: true, grading: true, citations: true,
     persistedAfterReload: true, reset: true, math: true, summary: true, mobile: true, applicationLibrary: true,
-    separateQuizPage: true, draggableColumns: true, layoutPersistence: true, applicationDeleteUndo: true }));
+    embeddedQuizPanel: true, conversationPreserved: true, draggableColumns: true, layoutPersistence: true, applicationDeleteUndo: true }));
 } catch (error) {
   await page.screenshot({ path: path.join(output, 'failure.png') });
   console.error(JSON.stringify({ errors, url: page.url() }));

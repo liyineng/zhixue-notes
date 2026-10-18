@@ -1181,3 +1181,27 @@ body.quiz-page { overflow: auto; height: auto; min-height: 100dvh; background: v
   .quiz-page-source { position: static; }
   #quiz-page-title { font-size: 18px; }
 }
+
+/* Quizzes live beside the conversation, within the existing right column. */
+.viewer-document { display: flex; flex-direction: column; min-height: 0; flex: 1; }
+.right-pane-tabs { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 16px; border-bottom: 1px solid var(--line); background: white; flex-shrink: 0; }
+.right-pane-tabs > div { display: flex; gap: 6px; }
+.right-pane-tabs > div button { border: 0; border-radius: 7px; background: transparent; color: var(--muted); cursor: pointer; font-size: 13px; padding: 7px 12px; }
+.right-pane-tabs > div button[aria-pressed="true"] { background: var(--teal-soft); color: var(--teal); font-weight: 600; }
+.quiz-workspace { flex: 1; min-height: 0; min-width: 0; overflow-y: auto; padding: 22px; background: white; }
+.quiz-workspace-heading { margin-bottom: 20px; }
+.quiz-workspace-heading > span { font-size: 12px; color: var(--muted); }
+.quiz-workspace-heading h2 { font-size: 19px; line-height: 1.6; margin: 10px 0 0; overflow-wrap: anywhere; }
+.quiz-workspace .quiz-card { border: 0; border-radius: 0; padding: 0; }
+.quiz-workspace .quiz-card > h3 { display: none; }
+.quiz-workspace .quiz-card-heading { margin-bottom: 16px; }
+.quiz-workspace .quiz-question-number { margin-top: 8px; }
+.quiz-workspace .quiz-option { padding: 16px; background: #f7f8fa; }
+.quiz-workspace .quiz-option.correct { background: var(--teal-soft); }
+.quiz-workspace .quiz-option.incorrect { background: #fff1f0; }
+.quiz-workspace .quiz-option.selected:not(.correct):not(.incorrect) { background: var(--blue-soft); }
+.quiz-panel-source { border: 1px solid var(--line); border-left: 3px solid var(--citation-color, var(--teal)); border-radius: 9px; padding: 15px; margin-top: 18px; font-size: 12px; line-height: 1.8; }
+.quiz-panel-source strong { color: var(--citation-color, var(--teal)); overflow-wrap: anywhere; }
+#quiz-panel-source-text { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 220px; overflow: auto; margin: 8px 0; color: var(--muted); }
+.quiz-panel-source a { color: var(--teal); text-decoration: none; font-size: 12px; }
+@media (max-width: 760px) { .quiz-workspace { padding: 18px; } .quiz-workspace .quiz-option { padding: 12px; } }

@@ -118,7 +118,7 @@
         </div>
 
         <div id="applications-content" class="library-content" hidden>
-          <div class="application-heading"><strong>交互式测验</strong><span>打开独立页面，继续上次进度</span></div>
+          <div class="application-heading"><strong>交互式测验</strong><span>在工作区打开，继续上次进度</span></div>
           <div id="application-list" class="application-list"></div>
         </div>
 
@@ -180,6 +180,11 @@
 
         <div id="workspace-resizer" class="panel-resizer" role="separator" tabindex="0" aria-orientation="vertical" aria-label="调整问答与原文宽度" title="拖动调整问答与原文宽度，双击恢复默认"></div>
         <section class="viewer-pane">
+          <div id="right-pane-tabs" class="right-pane-tabs" hidden>
+            <div role="group" aria-label="原文与测验切换"><button id="right-document-tab" type="button" aria-pressed="false">原文</button><button id="right-quiz-tab" type="button" aria-pressed="true">测验</button></div>
+            <button id="close-quiz-panel" type="button" class="icon-button compact" aria-label="收起测验" title="收起测验，进度自动保留">×</button>
+          </div>
+          <div id="viewer-document" class="viewer-document">
           <div class="viewer-toolbar">
             <div class="viewer-title">
               <svg class="icon"><use href="#i-file"></use></svg>
@@ -216,6 +221,12 @@
             <div class="source-heading">引用原文</div>
             <div id="source-text" class="source-text">尚未选择引用。</div>
           </div>
+          </div>
+          <section id="quiz-workspace" class="quiz-workspace" aria-label="测验面板" hidden>
+            <div class="quiz-workspace-heading"><span>应用 ／ 交互式测验</span><h2 id="quiz-workspace-title">测验</h2></div>
+            <div id="quiz-panel-body"></div>
+            <aside id="quiz-panel-source" class="quiz-panel-source" aria-label="测验引用原文" hidden><strong id="quiz-panel-source-title"></strong><div id="quiz-panel-source-text"></div><a id="quiz-panel-source-file" class="button ghost" target="_blank" rel="noopener">打开原文 ↗</a></aside>
+          </section>
         </section>
       </main>
     </div>
