@@ -1,7 +1,7 @@
 import { renderAnswerHtml, matchingSourceLines } from "/static/answer-format.js";
 import { initializeCloudSync } from '/static/cloud-sync.js';
 import { presentationHighlights } from '/static/presentation-highlights.js';
-import { renderQuiz } from '/static/quizzes.js';
+import { initializePanelResize } from '/static/panel-resize.js';
 import renderMathInElement from '/static/vendor/katex/contrib/auto-render.mjs';
 import * as pdfjsLib from "/static/vendor/pdfjs/pdf.mjs";
 
@@ -9,7 +9,8 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = "/static/vendor/pdfjs/pdf.worker.mjs";
 
 const state = {
   notebooks: [],
-  notebookId: localStorage.getItem("zhixue-notebook") || "default",
+  notebookId: new URLSearchParams(location.search).get('notebook_id') || localStorage.getItem("zhixue-notebook") || "default",
+  applications: [],
   selectedSources: new Set(),
   notes: [],
   answers: new Map(),
@@ -80,6 +81,7 @@ const dom = {
 const ui = Object.fromEntries([
   "notebook-select", "new-notebook", "rename-notebook", "delete-notebook", "notebook-title", "selection-status",
   "sources-tab", "notes-tab", "sources-content", "notes-content", "source-search-form",
+  "applications-tab", "applications-content", "application-count", "application-list",
   "source-search", "search-results", "select-all-sources", "note-count", "note-list",
   "new-note", "export-notes", "note-dialog", "note-form", "note-title", "note-content",
   "note-sources", "close-note", "delete-note", "export-note", "save-note", "clear-chat", "undo-chat-delete",
@@ -150,6 +152,7 @@ function setBusy(busy) {
   ui["attach-question-image"].disabled = busy;
   document.querySelectorAll(".draft-remove").forEach((button) => button.disabled = busy);
   document.querySelectorAll(".delete-exchange").forEach((button) => button.disabled = busy || button.dataset.pending === "true");
+  document.querySelectorAll('.delete-application').forEach(button => button.disabled = busy);
   ui["undo-chat-delete"].disabled = busy || !state.deletedCount;
   document.querySelectorAll('.quote-answer').forEach((button) => button.disabled = busy || !button.dataset.exchangeId);
   ui['remove-reply'].disabled = busy;
@@ -188,6 +191,8 @@ async function switchNotebook(id) {
   state.notes = [];
   ui["note-list"].replaceChildren();
   ui["note-count"].textContent = "0";
+  state.applications = [];
+  renderApplications();
   renderDocuments();
   selectionStatus();
   state.messageCitations.clear();
@@ -201,7 +206,7 @@ async function switchNotebook(id) {
   try {
     await loadNotebooks();
     await Promise.all([loadDocuments(true), loadNotes(), loadChat()]);
-    setLibraryTab("sources");
+    setLibraryTab(localStorage.getItem(`zhixue-library-tab:${state.notebookId}`) || 'sources');
   } finally { setBusy(state.chatPending); }
 }
 
@@ -951,7 +956,8 @@ function updateUndoButton() {
 }
 
 async function deleteExchange(button) {
-  if (state.busy || !window.confirm("删除这条问题及回答？可撤销最近 5 条删除；已保存的笔记和资料不受影响。")) return;
+  const application = state.applications.some(item => item.id === button.dataset.deleteExchange);
+  if (state.busy || !window.confirm(application ? '删除这份测验及其答题进度？可在问答栏撤销最近 5 条删除。' : "删除这条问题及回答？可撤销最近 5 条删除；已保存的笔记和资料不受影响。")) return;
   const exchangeId = button.dataset.deleteExchange;
   setBusy(true);
   try {
@@ -965,6 +971,8 @@ async function deleteExchange(button) {
     });
     if (!dom.messages.querySelector(".message")) { dom.messages.innerHTML = emptyChatTemplate; selectionStatus(); }
     state.deletedCount = result.deleted_count;
+    state.applications = state.applications.filter(item => item.id !== exchangeId);
+    renderApplications();
     if (state.replyTo?.id === exchangeId) { state.replyTo = null; renderReplyDraft(); }
     updateUndoButton();
     const removed = new Set(result.deleted_image_ids || []);
@@ -1265,21 +1273,34 @@ async function generateSummary(configuration = {}) {
   }
 }
 
-function showQuiz(messageId, result) {
-  updateAssistantMessage(messageId, result.answer, result.citations, result.mode, result.source_mode);
-  const article = dom.messages.querySelector(`[data-message-id="${messageId}"]`);
-  article.querySelectorAll('.save-answer, .quote-answer').forEach(button => button.remove());
-  const notebook = state.notebookId;
-  const endpoint = `/api/notebooks/${encodeURIComponent(notebook)}/quiz/${encodeURIComponent(result.chat_id)}`;
-  renderQuiz(article.querySelector('.message-body'), result, {
-    colorCitation,
-    onAnswer: (question_id, option) => api(`${endpoint}/answer`, jsonOptions('POST', { question_id, option })),
-    onReset: () => api(`${endpoint}/reset`, { method: 'POST' }),
-    onCitation: index => {
-      const reference = result.citations.find(c => c.index === index);
-      if (reference) showCitation(reference, messageId, index);
-    },
-  });
+function renderApplications() {
+  ui['application-count'].textContent = String(state.applications.length);
+  ui['application-list'].replaceChildren();
+  if (!state.applications.length) {
+    const empty = document.createElement('p'); empty.className = 'application-empty';
+    empty.textContent = '还没有测验。点击下方“功能选择”生成一份，完成后会保存在这里。';
+    ui['application-list'].append(empty);
+  }
+  for (const exchange of [...state.applications].reverse()) {
+    const quiz = exchange.result.quiz;
+    const card = document.createElement('article'); card.className = 'application-card';
+    const link = document.createElement('a'); link.className = 'application-open';
+    link.href = `/quiz/${encodeURIComponent(exchange.id)}?notebook_id=${encodeURIComponent(state.notebookId)}`;
+    const label = document.createElement('span'); label.className = 'application-kind'; label.textContent = '交互式测验';
+    const title = document.createElement('strong'); title.textContent = quiz.topic || exchange.question || '课程测验';
+    const count = quiz.questions.length, answered = Object.keys(quiz.answers).length;
+    const score = quiz.questions.filter(q => quiz.answers[q.id] === q.answer).length;
+    const status = document.createElement('span'); status.className = 'application-status';
+    status.textContent = `${count} 题 · 已答 ${answered} 题${answered ? ` · 答对 ${score} 题` : ''}`;
+    const action = document.createElement('span'); action.className = 'application-action';
+    action.textContent = answered === count ? '回顾解析 →' : answered ? '继续作答 →' : '开始作答 →';
+    link.append(label, title, status, action);
+    const remove = document.createElement('button'); remove.type = 'button'; remove.className = 'button ghost delete-application';
+    remove.textContent = '删除'; remove.setAttribute('aria-label', `删除测验：${title.textContent}`);
+    remove.dataset.deleteExchange = exchange.id; remove.disabled = state.busy;
+    remove.addEventListener('click', () => deleteExchange(remove));
+    card.append(link, remove); ui['application-list'].append(card);
+  }
 }
 
 async function generateQuiz(configuration) {
@@ -1291,8 +1312,14 @@ async function generateQuiz(configuration) {
   setBusy(true);
   try {
     const result = await api('/api/quiz', { ...jsonOptions('POST', { ...configuration, notebook_id: state.notebookId, request_id: job.id }), signal: job.controller.signal });
-    showQuiz(assistantId, result);
-    bindExchange(assistantId, userId, result.chat_id);
+    state.applications.push({ id: result.chat_id, question, result });
+    renderApplications();
+    dom.messages.querySelector(`[data-message-id="${assistantId}"]`)?.remove();
+    dom.messages.querySelector(`[data-message-id="${userId}"]`)?.remove();
+    if (!dom.messages.querySelector('.message')) { dom.messages.innerHTML = emptyChatTemplate; selectionStatus(); }
+    setLibraryTab('applications');
+    if (innerWidth <= 760) setMobilePane('sources');
+    showToast('测验已保存到“应用”，点击即可进入独立做题页面。');
   } catch (error) {
     if (job.cancelled || error.cancelled) setAssistantCancelled(assistantId);
     else { setAssistantError(assistantId, error); showToast(error.message, true); }
@@ -1472,10 +1499,10 @@ window.addEventListener("resize", () => {
 });
 
 function setLibraryTab(tab) {
-  const notes = tab === "notes";
-  ui["sources-content"].hidden = notes;
-  ui["notes-content"].hidden = !notes;
-  for (const id of ["sources-tab", "notes-tab"]) {
+  if (!['sources', 'notes', 'applications'].includes(tab)) tab = 'sources';
+  for (const name of ['sources', 'notes', 'applications']) ui[`${name}-content`].hidden = name !== tab;
+  localStorage.setItem(`zhixue-library-tab:${state.notebookId}`, tab);
+  for (const id of ["sources-tab", "notes-tab", "applications-tab"]) {
     const active = id === `${tab}-tab`;
     ui[id].classList.toggle("active", active);
     ui[id].setAttribute("aria-selected", String(active));
@@ -1507,8 +1534,11 @@ function scheduleChatPoll(notebookId, delay = 1500) {
 async function loadChat(polling = false) {
   window.clearTimeout(chatPollTimer);
   const notebookId = state.notebookId;
-  const { exchanges, deleted_count } = await api(`/api/notebooks/${encodeURIComponent(notebookId)}/chat`);
+  const { exchanges: allExchanges, deleted_count } = await api(`/api/notebooks/${encodeURIComponent(notebookId)}/chat`);
   if (notebookId !== state.notebookId) return;
+  state.applications = allExchanges.filter(exchange => exchange.status === 'complete' && exchange.result.quiz);
+  renderApplications();
+  const exchanges = allExchanges.filter(exchange => !(exchange.status === 'complete' && exchange.result.quiz));
   chatPollFailures = 0;
   state.deletedCount = deleted_count || 0;
   updateUndoButton();
@@ -1542,8 +1572,7 @@ async function loadChat(polling = false) {
     const id = exchange.id;
     if (exchange.status === "complete") {
       const result = exchange.result;
-      if (result.quiz) showQuiz(id, { ...result, chat_id: exchange.id });
-      else updateAssistantMessage(id, result.answer, result.citations, result.mode, result.source_mode, { question: exchange.question, coverage: result.summary_coverage });
+      updateAssistantMessage(id, result.answer, result.citations, result.mode, result.source_mode, { question: exchange.question, coverage: result.summary_coverage });
       const user = dom.messages.querySelector(`[data-message-id="user-${exchange.id}"]`);
       if (result.image_question_text && !user.querySelector('.image-recognition')) addRecognizedText(user, result.image_question_text, result.image_recognition_mode);
     } else if (exchange.status === "error") {
@@ -1571,7 +1600,7 @@ async function loadChat(polling = false) {
 }
 
 ui["clear-chat"].addEventListener("click", async () => {
-  if (state.busy || !window.confirm("永久清空当前笔记本的全部对话及删除记录？此操作无法撤销，已保存的笔记和资料不会删除。")) return;
+  if (state.busy || !window.confirm("永久清空当前笔记本的对话及删除记录？应用中的测验、已保存笔记和资料会保留。此操作无法撤销。")) return;
   setBusy(true);
   try {
     const result = await api(`/api/notebooks/${encodeURIComponent(state.notebookId)}/chat`, { method: "DELETE" });
@@ -1595,7 +1624,7 @@ ui["undo-chat-delete"].addEventListener("click", async () => {
     const result = await api(`/api/notebooks/${encodeURIComponent(state.notebookId)}/chat/undo`, { method: "POST" });
     await loadChat();
     dom.messages.querySelector(`[data-message-id="${result.chat_id}"]`)?.scrollIntoView({ block: "nearest" });
-    showToast("已恢复最近删除的问题及回答。");
+    showToast("已恢复最近删除的内容。");
   } catch (error) { showToast(error.message, true); }
   finally { setBusy(state.chatPending); }
 });
@@ -1805,6 +1834,7 @@ ui["delete-notebook"].addEventListener("click", async () => {
 });
 ui["sources-tab"].addEventListener("click", () => setLibraryTab("sources"));
 ui["notes-tab"].addEventListener("click", () => setLibraryTab("notes"));
+ui["applications-tab"].addEventListener("click", () => setLibraryTab("applications"));
 ui["select-all-sources"].addEventListener("change", (event) => {
   state.selectedSources = new Set(event.target.checked ? state.documents.map((doc) => doc.id) : []);
   saveSourceSelection();
@@ -1857,11 +1887,17 @@ async function initialize() {
   try {
     await loadNotebooks();
     await Promise.all([loadDocuments(true), loadNotes(), loadSettings(), loadChat()]);
+    setLibraryTab(localStorage.getItem(`zhixue-library-tab:${state.notebookId}`) || 'sources');
+    if (new URLSearchParams(location.search).get('library') === 'applications') {
+      setLibraryTab('applications');
+      if (innerWidth <= 760) setMobilePane('sources');
+    }
   } catch (error) {
     showToast(`初始化失败：${error.message}`, true);
   } finally { setBusy(state.chatPending); }
 }
 
+initializePanelResize(() => { if (state.pdfDocument) renderPdfPage(state.pdfPage); });
 initialize();
 
 initializeCloudSync({ api, jsonOptions, showToast, refresh: async () => {

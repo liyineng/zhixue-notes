@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>交互式测验 · 智学笔记</title>
+    <link rel="stylesheet" href="/static/vendor/katex/katex.min.css" />
+    <link rel="stylesheet" href="/static/styles.css" />
+    <script type="module" src="/static/quiz-page.js"></script>
+  </head>
+  <body class="quiz-page">
+    <header class="quiz-page-header"><a id="quiz-back" href="/">← 返回笔记本</a><strong>智学笔记 <span>／ 交互式测验</span></strong></header>
+    <main class="quiz-page-layout">
+      <div><h1 id="quiz-page-title">正在读取测验…</h1><p id="quiz-page-error" class="feature-error" role="alert" hidden></p><div id="quiz-page-body"></div></div>
+      <aside class="quiz-page-source" aria-label="测验来源"><span class="feature-kicker">回到资料</span><h2 id="quiz-source-title">查看依据</h2><div id="quiz-source-text">提交答案后，点击解析下方的来源可在这里查看引用原文。</div><a id="quiz-source-file" class="button secondary" target="_blank" rel="noopener" hidden>打开原文件</a></aside>
+    </main>
+  </body>
+</html>

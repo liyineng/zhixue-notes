@@ -95,6 +95,7 @@
         <div class="library-tabs" role="tablist" aria-label="笔记本内容">
           <button id="sources-tab" class="library-tab active" role="tab" aria-selected="true" type="button">资料来源</button>
           <button id="notes-tab" class="library-tab" role="tab" aria-selected="false" type="button">我的笔记 <span id="note-count">0</span></button>
+          <button id="applications-tab" class="library-tab" role="tab" aria-selected="false" type="button">应用 <span id="application-count">0</span></button>
         </div>
         <div id="sources-content" class="library-content">
         <form id="source-search-form" class="source-search" role="search">
@@ -116,6 +117,11 @@
           <div id="note-list" class="note-list"></div>
         </div>
 
+        <div id="applications-content" class="library-content" hidden>
+          <div class="application-heading"><strong>交互式测验</strong><span>打开独立页面，继续上次进度</span></div>
+          <div id="application-list" class="application-list"></div>
+        </div>
+
         <div class="sidebar-footer">
           <button id="summary-button" class="button secondary" type="button">
             <svg class="icon"><use href="#i-sparkles"></use></svg>
@@ -124,6 +130,8 @@
           <div id="model-pill" class="model-pill">未配置模型</div>
         </div>
       </aside>
+
+      <div id="sidebar-resizer" class="panel-resizer" role="separator" tabindex="0" aria-orientation="vertical" aria-label="调整资料栏宽度" title="拖动调整资料栏宽度，双击恢复默认"></div>
 
       <main id="workspace" class="workspace">
         <nav class="mobile-tabs" aria-label="工作区视图">
@@ -170,6 +178,7 @@
           </form>
         </section>
 
+        <div id="workspace-resizer" class="panel-resizer" role="separator" tabindex="0" aria-orientation="vertical" aria-label="调整问答与原文宽度" title="拖动调整问答与原文宽度，双击恢复默认"></div>
         <section class="viewer-pane">
           <div class="viewer-toolbar">
             <div class="viewer-title">

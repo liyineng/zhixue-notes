@@ -450,9 +450,10 @@ def list_exchanges(notebook_id: str, *, include_deleted: bool = False) -> list[d
     return result
 
 
-def clear_exchanges(notebook_id: str) -> None:
+def clear_exchanges(notebook_id: str, *, preserve_quizzes: bool = False) -> None:
     with connection() as conn:
-        conn.execute("DELETE FROM chat_exchanges WHERE notebook_id=?", (notebook_id,))
+        condition = " AND NOT (status='complete' AND deleted_at IS NULL AND COALESCE(json_type(result_json, '$.quiz'), '')='object')" if preserve_quizzes else ''
+        conn.execute("DELETE FROM chat_exchanges WHERE notebook_id=?" + condition, (notebook_id,))
 
 
 def deleted_exchange_count(notebook_id: str) -> int:

@@ -1047,6 +1047,16 @@ def answer_quiz(notebook_id: str, exchange_id: str, payload: QuizAnswerRequest) 
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@app.get('/api/notebooks/{notebook_id}/quiz/{exchange_id}')
+def get_quiz(notebook_id: str, exchange_id: str) -> dict[str, Any]:
+    _notebook(notebook_id)
+    exchange = db.get_exchange(notebook_id, exchange_id)
+    if not exchange or exchange['status'] != 'complete' or not exchange['result'].get('quiz'):
+        raise HTTPException(status_code=404, detail='测验不存在、已删除或不属于当前笔记本。')
+    return {**exchange['result'], 'chat_id': exchange_id, 'title': exchange['question'],
+            'created_at': exchange['created_at']}
+
+
 @app.post('/api/notebooks/{notebook_id}/quiz/{exchange_id}/reset')
 def reset_quiz(notebook_id: str, exchange_id: str) -> dict[str, Any]:
     _notebook(notebook_id)
@@ -1082,7 +1092,9 @@ def generation_status(notebook_id: str, exchange_id: str) -> dict[str, Any]:
 def clear_chat(notebook_id: str) -> dict[str, Any]:
     _notebook(notebook_id)
     image_ids = {image["id"] for exchange in db.list_exchanges(notebook_id, include_deleted=True) for image in exchange["images"]}
-    db.clear_exchanges(notebook_id)
+    db.clear_exchanges(notebook_id, preserve_quizzes=True)
+    retained_images = {image['id'] for exchange in db.list_exchanges(notebook_id, include_deleted=True) for image in exchange['images']}
+    image_ids -= retained_images
     for image_id in image_ids:
         image = db.get_question_image(image_id)
         if image:
@@ -1121,3 +1133,9 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 @app.get("/")
 def index_page() -> FileResponse:
     return FileResponse(STATIC_DIR / "index.html")
+
+
+@app.get('/quiz/{exchange_id}')
+def quiz_page(exchange_id: str, notebook_id: str = 'default') -> FileResponse:
+    get_quiz(notebook_id, exchange_id)
+    return FileResponse(STATIC_DIR / 'quiz.html')

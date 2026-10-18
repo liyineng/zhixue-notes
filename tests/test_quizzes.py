@@ -86,6 +86,37 @@ class QuizTests(unittest.TestCase):
             self.assertGreaterEqual(self.client.post(endpoint, json=body).status_code, 400)
         self.assertEqual(db.get_exchange(notebook, result['chat_id'])['result']['quiz']['answers'], {})
 
+    def test_dedicated_page_and_read_api_are_notebook_scoped_and_reject_deleted_quizzes(self):
+        notebook, document = self.prepare()
+        result = self.create(notebook, document)
+        identity = result['chat_id']
+        other = self.notebook('其他笔记本')
+        response = self.client.get(f'/quiz/{identity}', params={'notebook_id': notebook})
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('quiz-page.js', response.text)
+        read = self.client.get(f'/api/notebooks/{notebook}/quiz/{identity}')
+        self.assertEqual(read.status_code, 200)
+        self.assertEqual(read.json()['quiz'], result['quiz'])
+        self.assertEqual(self.client.get(f'/api/notebooks/{other}/quiz/{identity}').status_code, 404)
+        self.assertEqual(self.client.get(f'/quiz/{identity}', params={'notebook_id': other}).status_code, 404)
+        self.client.delete(f'/api/notebooks/{notebook}/chat/{identity}')
+        self.assertEqual(self.client.get(f'/api/notebooks/{notebook}/quiz/{identity}').status_code, 404)
+        self.assertEqual(self.client.get(f'/quiz/{identity}', params={'notebook_id': notebook}).status_code, 404)
+
+    def test_clearing_conversations_preserves_application_quizzes_and_saved_answers(self):
+        notebook, document = self.prepare()
+        result = self.create(notebook, document)
+        identity = result['chat_id']
+        self.client.post(f'/api/notebooks/{notebook}/quiz/{identity}/answer', json={'question_id': 'q1', 'option': 2})
+        db.start_exchange('ordinary', notebook, '普通问题')
+        db.finish_exchange('ordinary', {'answer': '普通回答'})
+        response = self.client.delete(f'/api/notebooks/{notebook}/chat')
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNone(db.get_exchange(notebook, 'ordinary'))
+        saved = self.client.get(f'/api/notebooks/{notebook}/quiz/{identity}')
+        self.assertEqual(saved.status_code, 200)
+        self.assertEqual(saved.json()['quiz']['answers'], {'q1': 2})
+
     def test_malformed_answer_keys_or_fabricated_sources_fail_without_completed_quiz(self):
         notebook, document = self.prepare()
         for change in [{'sources': [999]}, {'answer': True}, {'answer': 4}, {'options': ['A'] * 4}, {'explanation': ''}]:
