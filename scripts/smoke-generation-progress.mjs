@@ -30,7 +30,7 @@ if d['operation']=='start':
     with db.connection() as conn:
         conn.execute('UPDATE chat_exchanges SET created_at=? WHERE id=?',((datetime.now(UTC)-timedelta(seconds=35)).isoformat(),d['id']))
 elif d['operation']=='progress':
-    db.set_generation_progress(d['id'],d['stage'],d['label'],d['detail'])
+    db.set_generation_progress(d['id'],d['stage'],d['label'],d['detail'],activity=d.get('activity'))
 else:
     db.finish_pending_exchange(d['id'],d['result'])
 `], { input: JSON.stringify({ id, notebook: notebook.id, operation, ...extra }) });
@@ -57,10 +57,15 @@ try {
   assert.match(await page.locator('.generation-timing').innerText(), /仍在处理/);
   // A transient status failure must not replace progress with a failed answer.
   await page.route('**/status', route => route.fulfill({ status: 503, json: { detail: '临时状态错误' } }), { times: 1 });
-  record(jobId, 'progress', { stage: 'evidence', label: '筛选依据', detail: '检索到 4 个候选片段，正在核对原文。' });
+  record(jobId, 'progress', { stage: 'evidence', label: '核对候选原文', detail: '检索到 4 个候选片段，正在核对原文。',
+    activity: { query: '网桥 自学习 转发表', source_count: 1, sources: [{ name: '网络课件 L04.pdf', pages: [28, 50], page_count: 2, fragments: 4 }] } });
   await page.locator('.generation-detail').filter({ hasText: '4 个候选片段' }).waitFor();
   assert.equal(await page.locator('.generation-steps .completed').count(), 1);
-  record(jobId, 'progress', { stage: 'answer', label: '生成回答', detail: '已整理 2 处资料依据，正在组织回答与引用。' });
+  assert.match(await page.locator('.generation-query').innerText(), /网桥 自学习 转发表/);
+  assert.match(await page.locator('.generation-sources').innerText(), /网络课件 L04.pdf/);
+  assert.match(await page.locator('.generation-sources').innerText(), /28、50/);
+  record(jobId, 'progress', { stage: 'answer', label: '生成回答', detail: '已整理 2 处资料依据，正在组织回答与引用。',
+    activity: { source_count: 1, sources: [{ name: '网络课件 L04.pdf', pages: [50], page_count: 1, fragments: 2 }] } });
   await page.locator('.generation-steps .current').filter({ hasText: '生成回答' }).waitFor();
   await fs.mkdir('artifacts/generation-progress', { recursive: true });
   await page.screenshot({ path: 'artifacts/generation-progress/desktop.png', fullPage: true });
@@ -71,10 +76,13 @@ try {
   // Refresh follows the same persisted status without the original POST connection.
   const restoredId = randomUUID();
   record(restoredId, 'start');
-  record(restoredId, 'progress', { stage: 'sources', label: '检查资料', detail: '正在读取资料及图片页。' });
+  record(restoredId, 'progress', { stage: 'sources', label: '检查资料', detail: '正在识别《网络课件 L04.pdf》第 28 页的图片文字。',
+    activity: { source_count: 1, sources: [{ name: '网络课件 L04.pdf', pages: [28], page_count: 1, fragments: 0 }] } });
   await page.reload({ waitUntil: 'networkidle' });
   await page.locator('.generation-steps .current').filter({ hasText: '检查资料' }).waitFor();
-  record(restoredId, 'progress', { stage: 'answer', label: '生成回答', detail: '正在组织回答与引用。' });
+  assert.match(await page.locator('.generation-sources').innerText(), /第 28 页/);
+  record(restoredId, 'progress', { stage: 'answer', label: '生成回答', detail: '正在结合下列资料组织回答与引用。',
+    activity: { source_count: 1, sources: [{ name: '网络课件 L04.pdf', pages: [28, 50], page_count: 2, fragments: 2 }] } });
   await page.locator('.generation-steps .current').filter({ hasText: '生成回答' }).waitFor();
   await page.setViewportSize({ width: 390, height: 844 });
   assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1));

@@ -68,6 +68,25 @@ class DocumentImageTests(unittest.TestCase):
         other = self.notebook('其他课程')
         self.assertEqual(self.client.get('/api/sources/search', params={'notebook_id': other, 'q': 'CRC'}).json()['results'], [])
 
+    def test_image_page_progress_names_page_before_recognition_and_skips_cached_pages(self):
+        document = {'id': 'page-progress', 'name': '课件.pdf', 'kind': 'pdf', 'path': str(Path(self.temp.name) / '课件.pdf')}
+        Path(document['path']).write_bytes(self.image_pdf())
+        pages = []
+        async def recognize(*args, **kwargs):
+            self.assertEqual(pages, [1])
+            return '图片题目与解答', 'vision'
+        with patch('app.document_images.db.document_chunk_ids', return_value=[]), \
+             patch('app.document_images.db.append_image_chunk', return_value=True), \
+             patch('app.document_images.read_question', side_effect=recognize):
+            report = asyncio.run(ensure_image_text(document, {'vision_model': 'mock'}, on_page=pages.append))
+        self.assertEqual(report['added_pages'], [1])
+        pages.clear()
+        with patch('app.document_images.db.document_chunk_ids', return_value=['image-page-progress-1']), \
+             patch('app.document_images.read_question', AsyncMock()) as recognizer:
+            asyncio.run(ensure_image_text(document, {'vision_model': 'mock'}, on_page=pages.append))
+        self.assertEqual(pages, [])
+        recognizer.assert_not_called()
+
     def test_unread_image_page_is_reported_and_failed_empty_import_leaves_no_record(self):
         notebook = self.notebook('未识别图片')
         db.update_settings({'vision_model': 'test-vision'})

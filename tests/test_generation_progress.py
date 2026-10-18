@@ -5,6 +5,7 @@ from unittest.mock import patch
 
 import test_workspace
 from app import db, main, generation
+from app.progress import source_activity
 
 
 class GenerationProgressTests(unittest.TestCase):
@@ -17,6 +18,8 @@ class GenerationProgressTests(unittest.TestCase):
         notebook = self.notebook('进度')
         other = self.notebook('隔离')
         document = self.upload(notebook, '协议.md', '网络协议规定通信规则。')
+        self.upload(notebook, '未勾选.md', '网络协议规定通信规则，未勾选的来源不得显示在进度中。')
+        self.upload(other, '另一本.md', '网络协议规定通信规则，不能跨笔记本显示。')
         observations = []
         ready = threading.Event()
         release = threading.Event()
@@ -53,6 +56,13 @@ class GenerationProgressTests(unittest.TestCase):
                 release.set()
             self.assertEqual(future.result(3).status_code, 200)
         self.assertEqual([p['steps'][-1]['stage'] for p in observations], ['analysis', 'evidence', 'answer'])
+        evidence_activity = observations[1]['activity']
+        self.assertEqual(evidence_activity['query'], '网络协议')
+        self.assertEqual([s['name'] for s in evidence_activity['sources']], ['协议.md'])
+        self.assertEqual(evidence_activity['sources'][0]['pages'], [1])
+        self.assertEqual(evidence_activity['sources'][0]['fragments'], 1)
+        self.assertEqual(observations[2]['activity']['sources'], evidence_activity['sources'])
+        self.assertEqual(observations[2]['activity']['query'], '')
         self.assertEqual([s['stage'] for s in observations[-1]['steps']],
                          ['question', 'analysis', 'sources', 'retrieval', 'evidence', 'answer'])
         db.set_generation_progress('progress-job', 'late', '迟到进度', '不可覆盖完成回答')
@@ -87,7 +97,25 @@ class GenerationProgressTests(unittest.TestCase):
             progress = db.get_exchange(notebook, 'summary-progress')['result']['progress']
             self.assertEqual([s['stage'] for s in progress['steps']], ['sources', 'retrieval', 'answer'])
             self.assertIn('片段', progress['detail'])
+            self.assertEqual(progress['activity']['sources'][0]['name'], '资料.md')
             return '复习提纲'
         with patch.object(main, 'make_summary', side_effect=summary):
             response = self.client.post('/api/summary', json={'notebook_id': notebook, 'document_ids': [document], 'request_id': 'summary-progress'})
         self.assertEqual(response.status_code, 200, response.text)
+
+    def test_activity_groups_real_pages_and_limits_long_source_lists(self):
+        items = [{'document_id': 'course', 'document_name': '课件.pdf', 'page': page, 'text': '内容'}
+                 for page in [28, 50, 28]]
+        grouped = source_activity(items)
+        self.assertEqual(grouped['sources'][0]['pages'], [28, 50])
+        self.assertEqual(grouped['sources'][0]['fragments'], 3)
+        for page in range(1, 30):
+            items.append({'document_id': 'course', 'document_name': '课件.pdf', 'page': page, 'text': '内容'})
+        for i in range(20):
+            items.append({'id': f'doc-{i}', 'name': f'资料{i}.md'})
+        activity = source_activity(items, '词' * 1000)
+        self.assertEqual(activity['source_count'], 21)
+        self.assertEqual(len(activity['sources']), 12)
+        self.assertEqual(len(activity['sources'][0]['pages']), 12)
+        self.assertEqual(activity['sources'][0]['page_count'], 30)
+        self.assertLessEqual(len(activity['query']), 241)

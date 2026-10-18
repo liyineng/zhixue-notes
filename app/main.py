@@ -17,6 +17,7 @@ from starlette.concurrency import run_in_threadpool
 
 from . import db, generation
 from .conversation import MAX_TURNS, recent_context
+from .progress import source_activity
 from .config import (
     MAX_UPLOAD_BYTES,
     STATIC_DIR,
@@ -53,10 +54,18 @@ def _index() -> BM25Index:
     return _build_index(_index_version)
 
 
-async def _ensure_source_images(documents: list[dict[str, Any]], settings: dict[str, Any]) -> list[dict[str, Any]]:
+async def _ensure_source_images(documents: list[dict[str, Any]], settings: dict[str, Any], exchange_id: str | None = None) -> list[dict[str, Any]]:
     unread = []
-    for document in documents:
-        report = await ensure_image_text(document, settings)
+    for index, document in enumerate(documents, 1):
+        if exchange_id:
+            db.set_generation_progress(exchange_id, 'sources', '检查资料',
+                                       f"正在检查《{document['name']}》（{index}/{len(documents)}），读取文字及图片页识别结果。",
+                                       activity=source_activity([document]))
+        def on_page(page: int) -> None:
+            db.set_generation_progress(exchange_id, 'sources', '识别课件图片页',
+                                       f"正在识别《{document['name']}》第 {page} 页的图片文字。",
+                                       activity=source_activity([{'document_id': document['id'], 'document_name': document['name'], 'page': page}]))
+        report = await ensure_image_text(document, settings, on_page=on_page) if exchange_id and document['kind'] == 'pdf' else await ensure_image_text(document, settings)
         if report['added_pages']:
             _invalidate_index()
         if report['unread_pages']:
@@ -613,29 +622,39 @@ async def _ask(payload: AskRequest, exchange_id: str) -> dict[str, Any]:
                 if not selected_documents:
                     raise HTTPException(status_code=400, detail="你提到的课件不在当前勾选的来源中，请先勾选该课件。")
                 document_names = [document["name"] for document in selected_documents]
-                unread = await _ensure_source_images(selected_documents, settings)
+                unread = await _ensure_source_images(selected_documents, settings, exchange_id)
                 db.set_generation_progress(exchange_id, 'retrieval', '读取课件内容', f'正在整理 {len(selected_documents)} 份课件的完整页面。')
                 contexts = _summary_contexts([document["id"] for document in selected_documents])
             else:
-                unread = await _ensure_source_images(selected_documents, settings)
-                db.set_generation_progress(exchange_id, 'retrieval', '检索资料', '正在当前勾选的来源中查找相关片段。')
+                unread = await _ensure_source_images(selected_documents, settings, exchange_id)
                 combined_query = " ".join(dict.fromkeys([analysis["search_query"], *analysis["keywords"]]))
                 if images:
                     # Diagram identifiers are task conditions, not retrieval concepts.
                     combined_query = re.sub(r"\b[A-Za-z]\d+\b", " ", combined_query)
+                retrieval_query = combined_query
+                db.set_generation_progress(exchange_id, 'retrieval', '检索资料',
+                                           f'正在 {len(selected_documents)} 份勾选来源中查找相关内容。',
+                                           activity=source_activity(selected_documents, combined_query))
                 results = _index().search(
                     combined_query,
                     top_k=min(20, top_k * 3),
                     document_ids=document_ids,
                 )
                 if not results and combined_query != effective_question:
+                    retrieval_query = ''  # Do not expose the full conversational prompt as search keywords.
+                    db.set_generation_progress(exchange_id, 'retrieval', '补充检索',
+                                               '关键词未命中，正在结合本次问题与上下文补充查找。',
+                                               activity=source_activity(selected_documents))
                     results = _index().search(
                         effective_question,
                         top_k=min(20, top_k * 3),
                         document_ids=document_ids,
                     )
-                db.set_generation_progress(exchange_id, 'evidence', '筛选依据', f'检索到 {len(results)} 个候选片段，正在核对与问题直接相关的原文。')
-                contexts = await select_evidence(effective_question, _contexts_for_results(results), settings, top_k)
+                candidates = _contexts_for_results(results)
+                db.set_generation_progress(exchange_id, 'evidence', '核对候选原文',
+                                           f'找到 {len(candidates)} 个候选片段，正在核对下列资料中的原文。' if candidates else '未找到匹配片段，正在检查是否有可用依据。',
+                                           activity=source_activity(candidates, retrieval_query))
+                contexts = await select_evidence(effective_question, candidates, settings, top_k)
 
         retrieval_hits = len(contexts)
         coverage = summary_coverage(contexts) if analysis["intent"] == "summary" else None
@@ -644,7 +663,8 @@ async def _ask(payload: AskRequest, exchange_id: str) -> dict[str, Any]:
         if unread:
             effective_question += f"\n资料解析状态：{unread}。这些页面含图片但识别失败，不是未提供页面，不要猜测图片内容。"
         db.set_generation_progress(exchange_id, 'answer', '生成回答',
-                                   f'已整理 {len(contexts)} 处资料依据，正在组织回答与引用。' if contexts else '正在生成回答；本次没有可引用的资料依据。')
+                                   f'已选出 {len(contexts)} 处依据，正在结合下列资料组织回答。' if contexts else '正在生成回答；本次没有可引用的资料依据。',
+                                   activity=source_activity(contexts))
         if analysis["intent"] == "summary":
             answer = await make_summary(contexts, settings, question=effective_question)
         else:
@@ -705,7 +725,7 @@ async def _summary(payload: SummaryRequest, exchange_id: str) -> dict[str, Any]:
     db.start_exchange(exchange_id, payload.notebook_id or "default", question)
     try:
         db.set_generation_progress(exchange_id, 'sources', '检查资料', f'正在检查 {len(selected)} 份资料及图片页识别结果。')
-        unread = await _ensure_source_images(selected, settings)
+        unread = await _ensure_source_images(selected, settings, exchange_id)
         db.set_generation_progress(exchange_id, 'retrieval', '读取课件内容', '正在汇总选中课件的完整页面。')
         contexts = _summary_contexts([doc["id"] for doc in selected])
         if not contexts:
@@ -714,7 +734,8 @@ async def _summary(payload: SummaryRequest, exchange_id: str) -> dict[str, Any]:
         coverage['unread_image_pages'] = unread
         if unread:
             question += f"\n资料解析状态：{unread}。这些页含图片但识别失败，不是未提供页面，不要猜测图片内容。"
-        db.set_generation_progress(exchange_id, 'answer', '生成复习提纲', f'已读取 {len(contexts)} 个资料片段，正在组织提纲与引用。')
+        db.set_generation_progress(exchange_id, 'answer', '生成复习提纲', f'已读取 {len(contexts)} 个资料片段，正在整理下列课件的提纲与引用。',
+                                   activity=source_activity(contexts))
         answer = await make_summary(contexts, settings, question=question)
         answer, contexts = cited_sources(answer, contexts)
     except Exception as exc:

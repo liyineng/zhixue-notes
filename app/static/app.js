@@ -742,6 +742,34 @@ function renderGenerationProgress(messageId, progress, createdAt) {
   detail.className = 'generation-detail';
   detail.textContent = progress?.detail || '请求已接收，等待开始处理。';
   panel.append(detail);
+  const activity = progress?.activity;
+  if (activity?.query) {
+    const query = document.createElement('div');
+    query.className = 'generation-query';
+    query.textContent = `检索词：${activity.query}`;
+    panel.append(query);
+  }
+  if (activity?.sources?.length) {
+    const heading = document.createElement('div');
+    heading.className = 'generation-source-heading';
+    const stage = steps.at(-1)?.stage;
+    heading.textContent = ({ sources: '当前检查的资料', retrieval: '检索范围', evidence: '候选原文 · 正在核对', answer: '本次参考资料' })[stage] || '相关资料';
+    if (activity.source_count > activity.sources.length) heading.textContent += ` · 显示 ${activity.sources.length}/${activity.source_count} 份`;
+    const sources = document.createElement('ul');
+    sources.className = 'generation-sources';
+    for (const source of activity.sources) {
+      const row = document.createElement('li');
+      const name = document.createElement('strong');
+      name.textContent = source.name;
+      const location = document.createElement('span');
+      location.textContent = source.pages?.length
+        ? `第 ${source.pages.join('、')} 页${source.page_count > source.pages.length ? ` 等 ${source.page_count} 页` : ''}`
+        : source.fragments ? `${source.fragments} 个文字片段` : '已选来源';
+      row.append(name, location);
+      sources.append(row);
+    }
+    panel.append(heading, sources);
+  }
   const elapsed = Math.max(0, Math.floor((Date.now() - Date.parse(createdAt)) / 1000));
   if (Number.isFinite(elapsed)) {
     const timing = document.createElement('div');

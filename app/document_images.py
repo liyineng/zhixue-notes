@@ -10,6 +10,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 from typing import Any
+from collections.abc import Callable
 
 import pymupdf
 import httpx
@@ -84,7 +85,8 @@ def ocr_lines(png: bytes, width: int, height: int, page: int, bbox: list[float])
     return lines
 
 
-async def ensure_image_text(document: dict[str, Any], settings: dict[str, Any]) -> dict[str, Any]:
+async def ensure_image_text(document: dict[str, Any], settings: dict[str, Any],
+                            on_page: Callable[[int], None] | None = None) -> dict[str, Any]:
     if document['kind'] != 'pdf':
         return {'added_pages': [], 'unread_pages': []}
     async with _locks.setdefault(document['id'], asyncio.Lock()):
@@ -96,6 +98,8 @@ async def ensure_image_text(document: dict[str, Any], settings: dict[str, Any]) 
             identity = f"image-{document['id']}-{number}"
             if identity in existing:
                 continue
+            if on_page:
+                on_page(number)
             regions = candidate['regions']
             lines = []
             if candidate['image_only'] and settings.get('vision_model'):
