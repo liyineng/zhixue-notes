@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import mimetypes
+import hashlib
 import asyncio
 from contextlib import suppress
 import re
@@ -13,7 +14,7 @@ from typing import Literal
 from uuid import uuid4
 
 from fastapi import FastAPI, File, HTTPException, UploadFile, Query
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 import httpx
 from pydantic import BaseModel, Field
@@ -1127,15 +1128,38 @@ def delete_chat_exchange(notebook_id: str, exchange_id: str) -> dict[str, Any]:
             "deleted_count": db.deleted_exchange_count(notebook_id)}
 
 
-app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+class FrontendStaticFiles(StaticFiles):
+    async def get_response(self, path: str, scope) -> Response:
+        response = await super().get_response(path, scope)
+        if not path.startswith('vendor/') and Path(path).suffix in {'.js', '.mjs', '.css', '.html'}:
+            response.headers['Cache-Control'] = 'no-cache'
+        return response
+
+
+app.mount("/static", FrontendStaticFiles(directory=STATIC_DIR), name="static")
+
+
+def _frontend_page(filename: str) -> HTMLResponse:
+    # A changed entry URL also bypasses module caches created by older releases.
+    # Include imported modules so any first-party frontend update changes it.
+    digest = hashlib.sha256()
+    for asset in sorted(STATIC_DIR.iterdir()):
+        if asset.is_file() and asset.suffix in {'.js', '.mjs', '.css'}:
+            digest.update(asset.name.encode())
+            digest.update(asset.read_bytes())
+    version = digest.hexdigest()[:16]
+    html = (STATIC_DIR / filename).read_text(encoding='utf-8')
+    for asset in ('app.js', 'quiz-page.js', 'styles.css'):
+        html = html.replace(f'"/static/{asset}"', f'"/static/{asset}?v={version}"')
+    return HTMLResponse(html, headers={'Cache-Control': 'no-cache'})
 
 
 @app.get("/")
-def index_page() -> FileResponse:
-    return FileResponse(STATIC_DIR / "index.html")
+def index_page() -> HTMLResponse:
+    return _frontend_page('index.html')
 
 
 @app.get('/quiz/{exchange_id}')
-def quiz_page(exchange_id: str, notebook_id: str = 'default') -> FileResponse:
+def quiz_page(exchange_id: str, notebook_id: str = 'default') -> HTMLResponse:
     get_quiz(notebook_id, exchange_id)
-    return FileResponse(STATIC_DIR / 'quiz.html')
+    return _frontend_page('quiz.html')
