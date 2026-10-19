@@ -342,6 +342,7 @@ def list_notes(notebook_id: str) -> list[dict[str, Any]]:
 def _note_dict(row: sqlite3.Row) -> dict[str, Any]:
     note = _row_to_dict(row)
     note["citations"] = json.loads(note.pop("citations_json"))
+    note['source_exchange_id'] = note['id'][len('answer-'):] if note['id'].startswith('answer-') else None
     return note
 
 
@@ -608,3 +609,31 @@ def purge_deleted_exchange(notebook_id: str, exchange_id: str) -> dict[str, Any]
 
 def purge_all_deleted_exchanges(notebook_id: str) -> dict[str, Any]:
     return _purge_deleted_exchanges(notebook_id)  # type: ignore[return-value]
+
+
+def save_answer_note(notebook_id: str, exchange_id: str) -> tuple[dict[str, Any], bool]:
+    """Idempotent answer snapshot; re-saving must not overwrite a user's edits."""
+    import re
+    identity = 'answer-' + exchange_id
+    created = False
+    with connection() as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        existing = conn.execute('SELECT * FROM notes WHERE id=? AND notebook_id=?', (identity, notebook_id)).fetchone()
+        if existing:
+            return _note_dict(existing), False
+        exchange = conn.execute("SELECT * FROM chat_exchanges WHERE id=? AND notebook_id=? AND deleted_at IS NULL",
+                                (exchange_id, notebook_id)).fetchone()
+        if exchange is None:
+            raise LookupError('这条回答不存在、已删除或不属于当前笔记本。')
+        result = json.loads(exchange['result_json'])
+        answer = result.get('answer', '')
+        if exchange['status'] != 'complete' or result.get('cancelled') or result.get('quiz') or not isinstance(answer, str) or not answer.strip():
+            raise ValueError('请等待完整回答后再保存为笔记。')
+        heading = re.search(r'^#{1,6}\s+(.+?)\s*#*$', answer, re.MULTILINE)
+        title = (heading[1] if heading else exchange['question'].splitlines()[0] if exchange['question'].strip() else '学习笔记')
+        title = re.sub(r'[*`]', '', title).strip()[:200] or '学习笔记'
+        now = datetime.now(UTC).isoformat()
+        conn.execute('INSERT INTO notes VALUES (?, ?, ?, ?, ?, ?, ?)',
+                     (identity, notebook_id, title, answer, json.dumps(result.get('citations', []), ensure_ascii=False), now, now))
+        created = True
+    return get_note(identity), created

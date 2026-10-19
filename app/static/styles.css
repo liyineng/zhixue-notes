@@ -1409,3 +1409,16 @@ body.quiz-page { overflow: auto; height: auto; min-height: 100dvh; background: v
 .deleted-chat-toolbar-actions { display: flex; gap: 6px; margin-left: auto; }
 .deleted-chat-toolbar #clear-deleted-chat { color: #b45353; }
 .deleted-chat-toolbar #clear-deleted-chat:hover:not(:disabled) { background: #fff1f1; border-color: #ebc0c0; }
+
+.note-item.note-just-saved { border-color: #8ba9c9; background: #eef5fc; }
+.save-answer.is-saved { color: var(--teal); }
+.note-dialog #note-reading-title { margin: 0 0 8px; font-size: 22px; line-height: 1.5; overflow-wrap: anywhere; }
+.note-dialog #note-reading-meta { color: var(--muted); font-size: 12px; margin: 0 0 20px; }
+.note-dialog #note-reading-body { line-height: 1.9; overflow-wrap: anywhere; font-size: 14px; }
+.note-dialog #note-reading-body > :first-child { margin-top: 0; }
+.note-dialog .note-citation-preview { border-left: 3px solid var(--teal); background: var(--paper); padding: 12px; margin-top: 16px; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13px; line-height: 1.8; }
+.note-dialog .dialog-actions { position: sticky; bottom: -22px; padding-top: 14px; padding-bottom: 2px; background: var(--white); border-top: 1px solid var(--line); }
+
+.settings-dialog.note-dialog { width: min(800px, calc(100vw - 32px)); }
+.note-dialog .dialog-actions .button { width: auto; flex: 0 0 auto; min-height: 36px; padding: 6px 12px; font-size: 12px; white-space: nowrap; }
+.note-dialog .dialog-actions #delete-note { margin-right: auto; }

@@ -96,6 +96,8 @@ const ui = Object.fromEntries([
 const emptyChatTemplate = dom.emptyChat.outerHTML;
 let currentNote = null;
 let noteSaving = false;
+let noteEditing = false;
+const savingAnswers = new Set();
 let chatPollTimer = null;
 let chatPollFailures = 0;
 let holdChatScroll = false;
@@ -867,6 +869,7 @@ function updateAssistantMessage(messageId, answer, citations, mode, sourceMode, 
   quote.disabled = state.busy || !article.dataset.exchangeId;
   quote.dataset.exchangeId = article.dataset.exchangeId || '';
   article.append(quote);
+  syncSavedAnswerButtons();
   scrollMessages();
 }
 
@@ -1907,28 +1910,97 @@ async function loadNotes() {
     const title = document.createElement("strong");
     title.textContent = note.title;
     const preview = document.createElement("span");
-    preview.textContent = note.content.slice(0, 95);
+    preview.textContent = note.content.replace(/```[\s\S]*?```/g, '〔代码〕').replace(/\\\[[\s\S]*?\\\]|\\\([\s\S]*?\\\)|\$\$[\s\S]*?\$\$|\$[^$\n]+\$/g, '〔公式〕').replace(/^#{1,6}\s+.+$/gm, '').replace(/^[| :\-]+$/gm, '').replace(/[#*`|]/g, '').replace(/\s+/g, ' ').trim().slice(0, 95);
     const date = document.createElement("small");
     date.textContent = `${new Date(note.updated_at).toLocaleString("zh-CN")} · ${note.citations.length} 个引用`;
     button.append(title, preview, date);
     button.addEventListener("click", () => openNote(note));
+    button.dataset.noteId = note.id;
     ui["note-list"].append(button);
   }
+  syncSavedAnswerButtons();
+}
+
+function savedNoteFor(messageId, exchangeId = messageId) {
+  const answer = state.answers.get(messageId);
+  return state.notes.find(note => note.source_exchange_id === exchangeId || note.id === `answer-${exchangeId}`) ||
+    (answer && state.notes.find(note => note.content.trim() === answer.answer.trim() && JSON.stringify(note.citations.map(c => [c.index,c.document_id,c.page,c.text])) === JSON.stringify(answer.citations.map(c => [c.index,c.document_id,c.page,c.text]))));
+}
+
+function syncSavedAnswerButtons() {
+  dom.messages.querySelectorAll('.save-answer').forEach(button => {
+    const saved = savedNoteFor(button.dataset.saveAnswer, button.closest('article')?.dataset.exchangeId);
+    button.textContent = saved ? '已保存到笔记' : '保存为笔记';
+    button.title = saved ? '点击查看已保存的笔记' : '保留回答格式、公式和引用';
+    button.classList.toggle('is-saved', Boolean(saved));
+    button.disabled = savingAnswers.has(button.dataset.saveAnswer);
+  });
 }
 
 async function saveAnswer(button) {
-  const answer = state.answers.get(button.dataset.saveAnswer);
-  if (!answer) return;
-  button.disabled = true;
+  const messageId = button.dataset.saveAnswer, answer = state.answers.get(messageId);
+  if (!answer || savingAnswers.has(messageId)) return;
+  const existing = savedNoteFor(messageId, button.closest('article')?.dataset.exchangeId);
+  if (existing) { setLibraryTab('notes'); openNote(existing); return; }
+  const exchangeId = button.closest('article')?.dataset.exchangeId;
+  if (!exchangeId) return showToast('回答尚未保存完成，请稍后再试。');
+  savingAnswers.add(messageId); button.disabled = true;
   try {
-    await api("/api/notes", jsonOptions("POST", {
-      notebook_id: answer.notebook_id, title: answer.title, content: answer.answer,
-      citations: answer.citations,
-    }));
-    button.textContent = "已保存到笔记";
+    const result = await api(`/api/notebooks/${encodeURIComponent(answer.notebook_id)}/chat/${encodeURIComponent(exchangeId)}/note`, {method:'POST'});
+    if (state.notebookId !== answer.notebook_id) return;
     await Promise.all([loadNotes(), loadNotebooks()]);
-    showToast("回答与引用已保存到当前笔记本。");
-  } catch (error) { button.disabled = false; throw error; }
+    if (state.notebookId !== answer.notebook_id) return;
+    setLibraryTab('notes');
+    const item = [...ui['note-list'].querySelectorAll('.note-item')].find(item => item.dataset.noteId === result.note.id);
+    item?.classList.add('note-just-saved');
+    item?.scrollIntoView({block:'nearest'});
+    window.setTimeout(() => item?.classList.remove('note-just-saved'), 2200);
+    showToast('已保存到“我的笔记”，表格、公式和引用均保留。');
+  } finally { savingAnswers.delete(messageId); syncSavedAnswerButtons(); }
+}
+
+function setNoteMode(editing) {
+  noteEditing = editing;
+  document.getElementById('note-editor').hidden = !editing;
+  document.getElementById('note-reading').hidden = editing;
+  document.getElementById('note-dialog-title').textContent = editing ? currentNote ? '编辑笔记' : '新建笔记' : '笔记';
+  document.getElementById('edit-note').hidden = editing || !currentNote;
+  document.getElementById('cancel-note-edit').hidden = !editing || !currentNote;
+  ui['save-note'].hidden = !editing;
+  if (!editing && currentNote) {
+    document.getElementById('note-reading-title').textContent = currentNote.title;
+    document.getElementById('note-reading-meta').textContent = `${currentNote.source_exchange_id ? '保存的回答' : '学习笔记'} · ${new Date(currentNote.updated_at).toLocaleString('zh-CN')} · ${currentNote.citations.length} 个引用`;
+    const body = document.getElementById('note-reading-body');
+    body.innerHTML = renderAnswerHtml(currentNote.content, currentNote.citations);
+    const first = body.firstElementChild;
+    if (first?.matches('h1,h2,h3,h4,h5,h6') && first.textContent.trim() === currentNote.title.trim()) first.remove();
+    renderMathInElement(body, {
+      delimiters:[{left:'$$',right:'$$',display:true},{left:'\\[',right:'\\]',display:true},{left:'\\(',right:'\\)',display:false},{left:'$',right:'$',display:false}],
+      throwOnError:false, trust:false, maxExpand:1000, strict:'ignore', ignoredClasses:['citation-ref','unavailable-reference'],
+    });
+    body.querySelectorAll('.citation-ref').forEach(button => {
+      colorCitation(button, button.dataset.citation);
+      button.addEventListener('click', () => openNoteCitation(currentNote.citations.find(c => Number(c.index) === Number(button.dataset.citation))));
+    });
+  }
+}
+
+async function openNoteCitation(citation) {
+  if (!citation) return;
+  if (!state.documents.some(doc => doc.id === citation.document_id)) {
+    const snapshot = document.getElementById('note-citation-preview');
+    snapshot.hidden = false;
+    snapshot.textContent = `保存时的引用 [${citation.index}] · ${citation.document_name}${citation.page ? ` · 第 ${citation.page} 页` : ''}\n${citation.text || '未保存引用原文。'}`;
+    snapshot.scrollIntoView({block:'nearest'});
+    showToast('来源不在当前笔记本中，已显示保存时的引用原文。'); return;
+  }
+  try {
+    const {chunks} = await api(`/api/documents/${citation.document_id}/chunks`);
+    const chunk = chunks.find(item => item.id === citation.chunk_id);
+    if (!closeNote()) return;
+    const lines = matchingSourceLines(citation, chunks);
+    await showCitation({...citation, lines:lines.length ? lines : chunk?.lines || []}, '', citation.index);
+  } catch (error) { showToast(error.message, true); }
 }
 
 function openNote(note = null) {
@@ -1946,23 +2018,13 @@ function openNote(note = null) {
       button.type = "button";
       button.className = "note-source";
       button.textContent = `[${citation.index}] ${citation.document_name}${citation.page ? ` · 第 ${citation.page} 页` : ""}`;
-      button.addEventListener("click", async () => {
-        if (!state.documents.some((doc) => doc.id === citation.document_id)) {
-          showToast("来源已移出当前笔记本或被删除，笔记中仍保留引用原文。", true);
-          return;
-        }
-        try {
-          const { chunks } = await api(`/api/documents/${citation.document_id}/chunks`);
-          const chunk = chunks.find((item) => item.id === citation.chunk_id);
-          if (!closeNote()) return;
-          const pageLines = matchingSourceLines(citation, chunks);
-          showCitation({ ...citation, lines: pageLines.length ? pageLines : chunk?.lines || [] }, "", citation.index);
-        } catch (error) { showToast(error.message, true); }
-      });
+      button.addEventListener('click', () => openNoteCitation(citation));
       ui["note-sources"].append(button);
     }
   }
-  ui["note-dialog"].showModal();
+  document.getElementById('note-citation-preview').hidden = true;
+  setNoteMode(!note);
+  if (!ui['note-dialog'].open) ui['note-dialog'].showModal();
 }
 
 async function persistNote() {
@@ -2100,6 +2162,11 @@ ui["select-all-sources"].addEventListener("change", (event) => {
 });
 ui["source-search-form"].addEventListener("submit", (event) => { event.preventDefault(); searchSources(); });
 ui["source-search"].addEventListener("input", () => { if (!ui["source-search"].value.trim()) searchSources(); });
+document.getElementById('edit-note').addEventListener('click', () => { setNoteMode(true); ui['note-title'].focus(); });
+document.getElementById('cancel-note-edit').addEventListener('click', () => {
+  if (noteSaving || (noteDirty() && !window.confirm('放弃尚未保存的笔记修改？'))) return;
+  openNote(currentNote);
+});
 ui["new-note"].addEventListener("click", () => openNote());
 ui["close-note"].addEventListener("click", closeNote);
 ui["note-dialog"].addEventListener("cancel", (event) => { event.preventDefault(); closeNote(); });
@@ -2111,7 +2178,7 @@ window.addEventListener("beforeunload", (event) => {
 });
 ui["note-form"].addEventListener("submit", async (event) => {
   event.preventDefault();
-  try { if (await persistNote()) { ui["note-dialog"].close(); showToast("笔记已保存。"); } }
+  try { const note = await persistNote(); if (note) { openNote(note); showToast('笔记已保存。'); } }
   catch (error) { showToast(error.message, true); }
 });
 ui["delete-note"].addEventListener("click", async () => {
@@ -2123,7 +2190,7 @@ ui["delete-note"].addEventListener("click", async () => {
   } catch (error) { showToast(error.message, true); }
 });
 ui["export-note"].addEventListener("click", async () => {
-  try { const note = await persistNote(); if (note) download(`/api/notes/${note.id}/export`); }
+  try { const note = currentNote && !noteEditing ? currentNote : await persistNote(); if (note) download(`/api/notes/${note.id}/export`); }
   catch (error) { showToast(error.message, true); }
 });
 ui["export-notes"].addEventListener("click", () => download(`/api/notebooks/${state.notebookId}/export`));

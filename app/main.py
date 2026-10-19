@@ -721,6 +721,18 @@ def create_note(payload: NoteRequest) -> dict[str, Any]:
     return {"note": note}
 
 
+@app.post('/api/notebooks/{notebook_id}/chat/{exchange_id}/note')
+def save_chat_answer_note(notebook_id: str, exchange_id: str) -> dict[str, Any]:
+    _notebook(notebook_id)
+    try:
+        note, created = db.save_answer_note(notebook_id, exchange_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {'note': note, 'created': created}
+
+
 @app.patch("/api/notes/{note_id}")
 def edit_note(note_id: str, payload: NoteEditRequest) -> dict[str, Any]:
     note = db.get_note(note_id)

@@ -341,15 +341,20 @@
     <dialog id="note-dialog" class="settings-dialog note-dialog">
       <form id="note-form">
         <div class="dialog-heading">
-          <h2>编辑笔记</h2>
+          <h2 id="note-dialog-title">笔记</h2>
           <button id="close-note" class="icon-button" type="button" aria-label="关闭笔记">×</button>
         </div>
+        <section id="note-reading"><h3 id="note-reading-title"></h3><p id="note-reading-meta"></p><div id="note-reading-body" class="message-body"></div><div id="note-citation-preview" class="note-citation-preview" hidden></div></section>
+        <div id="note-editor" hidden>
         <label><span>标题</span><input id="note-title" type="text" maxlength="200" required /></label>
         <label><span>内容（支持 Markdown）</span><textarea id="note-content" rows="12" maxlength="200000" required></textarea></label>
+        </div>
         <div id="note-sources" class="note-sources"></div>
         <div class="dialog-actions">
           <button id="delete-note" class="button ghost danger" type="button">删除笔记</button>
           <button id="export-note" class="button secondary" type="button">导出 Markdown</button>
+          <button id="edit-note" class="button primary" type="button">编辑笔记</button>
+          <button id="cancel-note-edit" class="button ghost" type="button" hidden>取消编辑</button>
           <button id="save-note" class="button primary" type="submit">保存笔记</button>
         </div>
       </form>

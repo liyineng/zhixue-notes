@@ -53,7 +53,7 @@ try {
     const payload = route.request().postDataJSON();
     assert.equal(payload.notebook_id, notebookId);
     assert.deepEqual(payload.document_ids, [docs[0].id]);
-    const result = { answer: "【资料依据】\n网络分层可以降低网络设计的复杂性 [1]。", citations: [citation], mode: "model", source_mode: "knowledge_base" };
+    const result = { chat_id: payload.request_id, answer: "【资料依据】\n网络分层可以降低网络设计的复杂性 [1]。", citations: [citation], mode: "model", source_mode: "knowledge_base" };
     // Seed a persisted exchange for the mocked model response. Real /api/ask persistence is
     // covered by TestClient tests; this fixture lets the browser restore without a model call.
     execFileSync(process.env.PYTHON || path.resolve(".venv/bin/python"), ["-c", `
@@ -61,7 +61,7 @@ import sys,json
 from uuid import uuid4
 from app import db
 data=json.load(sys.stdin)
-exchange_id=uuid4().hex
+exchange_id=data["result"]["chat_id"]
 db.start_exchange(exchange_id,data["notebook_id"],data["question"])
 db.finish_exchange(exchange_id,data["result"])
 `], { input: JSON.stringify({ notebook_id: notebookId, question: payload.question, result }) });
@@ -87,6 +87,7 @@ db.finish_exchange(exchange_id,data["result"])
   await page.waitForFunction(() => document.querySelector(".save-answer").textContent === "已保存到笔记");
   await page.locator("#notes-tab").click();
   await page.locator(".note-item").first().click();
+  await page.locator('#edit-note').click();
   await page.locator("#note-title").fill("网络分层复习笔记");
   await page.locator("#note-content").fill("分层降低复杂性 [1]。\n\n- 复习重点：协议与层次");
   const downloadEvent = page.waitForEvent("download");
@@ -98,6 +99,7 @@ db.finish_exchange(exchange_id,data["result"])
   assert.match(downloaded, /验收资料.md/);
   await page.locator("#close-note").click();
   await page.locator(".note-item").first().click();
+  await page.locator('#edit-note').click();
   await page.locator("#note-content").fill("尚未保存的修改");
   page.once("dialog", (dialog) => dialog.dismiss());
   await page.keyboard.press("Escape");
