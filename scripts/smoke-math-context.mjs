@@ -10,7 +10,9 @@ T_{\min}=1RTT_{\text{建连}}+2RTT_{\text{数据}}+1RTT_{\text{挥手到TIME-WAI
 =4RTT+2MSL
 \]`;
 const code = String.raw`\[literal_{code}=1+2\]`;
-const answer = `${formula}\n\n\`\`\`text\n${code}\n\`\`\`\n\n正常文字和引用 [1]。`;
+const indented = formula.split('\n').map(line => '   ' + line).join('\n');
+const emphasis = String.raw`**结论：至少需要 \(60.03\text{ s}\)，即 \(60030\text{ ms}\)。**`;
+const answer = `${emphasis}\n\n${formula}\n\n2. 缩进步骤：\n${indented}\n\n\`\`\`text\n${code}\n\`\`\`\n\n正常文字和引用 [1]。`;
 const browser = await chromium.launch({headless:true});
 try {
   for (const width of [1440,390]) {
@@ -29,12 +31,15 @@ try {
     });
     await page.goto(process.env.APP_URL||'http://127.0.0.1:8765',{waitUntil:'networkidle'});
     assert.equal(await page.locator('.katex-error').count(),0);
-    assert.equal(await page.locator('.answer-math .mtable').count(),1,'long equation should be aligned');
+    assert.equal(await page.locator('.answer-math .mtable').count(),2,'long equation should be aligned');
     assert.equal(await page.locator('pre code').textContent(),code);
+    assert.equal(await page.locator('.message.assistant strong .katex').count(),2,'emphasis must span inline math');
+    assert(!await page.locator('.message.assistant').evaluate(el=>el.textContent.includes('**结论')));
+    assert(!await page.locator('.message.assistant').evaluate(el=>el.textContent.includes('literal0')));
     assert.equal(await page.locator('.citation-ref').count(),1);
-    const bounds=await page.locator('.answer-math').evaluate(el=>({client:el.clientWidth,scroll:el.scrollWidth}));
+    const bounds=await page.locator('.answer-math').first().evaluate(el=>({client:el.clientWidth,scroll:el.scrollWidth}));
     assert(bounds.scroll<=bounds.client+2,'reflowed formula should fit chat pane');
-    assert.equal(await page.locator('.answer-math').getAttribute('tabindex'),'0');
+    assert.equal(await page.locator('.answer-math').first().getAttribute('tabindex'),'0');
     assert.match(await page.locator('#model-context-status').textContent(),/1,048,576/);
     // Settings controls can be exercised without opening or changing saved data.
     await page.locator('#detect-model-context').evaluate(el=>el.click());

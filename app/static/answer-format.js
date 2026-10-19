@@ -7,18 +7,26 @@ const inlineTokens = /(`+[^`]*`+|\\\([\s\S]*?\\\)|\\\[[\s\S]*?\\\]|\$\$[\s\S]*?\
 const tokenAtStart = new RegExp(`^(?:${inlineTokens.source})`);
 
 function inline(text, references) {
-  return text.split(inlineTokens).map((part) => {
+  // Protect literals before parsing emphasis so **text with math** remains one
+  // span. The marker cannot collide with user text and never contains HTML.
+  let marker = '\u0000literal';
+  while (text.includes(marker)) marker += '-';
+  const literals = [];
+  const protectedText = text.split(inlineTokens).map((part) => {
     const code = part.match(/^(`+)([\s\S]*?)\1$/);
-    if (code) return `<code>${escape(code[2])}</code>`;
-    if (/^(?:\\\(|\\\[|\$)/.test(part)) return escape(part);
+    if (code || /^(?:\\\(|\\\[|\$)/.test(part)) {
+      const index = literals.push(code ? `<code>${escape(code[2])}</code>` : escape(part)) - 1;
+      return `${marker}${index}\u0000`;
+    }
     return escape(part)
-      .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-      .replace(/\*(?!\*)([^*]+)\*/g, '<em>$1</em>')
       .replace(/【(\d+)】/g, (whole, number) => references.has(Number(number))
         ? `[${number}]` : `<span class="unavailable-reference" title="这条历史回答没有保存此编号的来源，无法核对原文">【${number} · 来源缺失】</span>`)
       .replace(/\[(\d+)\]/g, (whole, number) => references.has(Number(number))
         ? `<button class="citation-ref" type="button" data-citation="${number}">[${number}]</button>` : whole);
   }).join('');
+  const html = protectedText.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    .replace(/\*(?!\*)([^*]+)\*/g, '<em>$1</em>');
+  return html.replace(new RegExp(`${marker}(\\d+)\\u0000`, 'g'), (_, index) => literals[Number(index)]);
 }
 
 function cells(line) {
@@ -74,7 +82,7 @@ export function renderAnswerHtml(text, citations = []) {
     if (!line) { i++; continue; }
     if (line.startsWith('\\[') || line.startsWith('$$')) {
       const delimiter = line.startsWith('\\[') ? '\\]' : '$$';
-      const math = [lines[i++]];
+      const math = [lines[i++].trimStart()];
       while (math.join('\n').indexOf(delimiter, 2) < 0) {
         if (i >= lines.length) break;
         math.push(lines[i++]);
