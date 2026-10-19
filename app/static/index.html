@@ -167,20 +167,25 @@
               <div class="attachment-heading"><strong>本次问题附件</strong><span id="question-attachment-count" role="status"></span></div>
               <div id="question-image-list" class="question-image-list"></div>
               <details><summary>附件文字（可校对）</summary><textarea id="question-image-text" rows="4" maxlength="20000" placeholder="可在这里填写或更正附件中的题目文字。"></textarea></details>
-              <small>附件仅随本次问题发送，不加入来源库。公式、图表请校对文字或配置图片识别模型。</small>
+              <small>仅用于本次提问，不加入资料来源。</small>
             </section>
           <form id="ask-form" class="composer">
-            <div class="attachment-library-toolbar"><span>问题附件</span><button id="manage-question-attachments" class="button ghost" type="button">附件管理</button></div>
             <div id="reply-draft" class="reply-draft" hidden><div><strong>引用回答追问</strong><p id="reply-preview"></p></div><button id="remove-reply" type="button" class="icon-button" aria-label="移除引用回答">×</button></div>
             <input id="question-image-input" type="file" accept=".pdf,.pptx,.docx,.md,.markdown,.txt,.png,.jpg,.jpeg,.webp" multiple hidden />
             <textarea
               id="question-input"
               rows="2"
-              placeholder="输入问题，Enter 发送，Shift+Enter 换行"
+              placeholder="输入问题，或上传题目资料…"
+              aria-label="输入问题"
+              title="Enter 发送，Shift+Enter 换行"
               maxlength="4000"
             ></textarea>
             <div class="composer-actions">
-            <button id="attach-question-image" class="icon-button" type="button" aria-label="上传资料" title="上传本次问题的附件：PDF、PPTX、DOCX、Markdown、TXT、PNG、JPG、WebP。不会加入来源库；每次最多 10 个附件，其中图片最多 3 张。">上传资料</button>
+            <div class="composer-tools">
+            <button id="attach-question-image" class="icon-button" type="button" aria-label="上传资料" title="上传本次问题的附件：PDF、PPTX、DOCX、Markdown、TXT、PNG、JPG、WebP。不会加入来源库；每次最多 10 个附件，其中图片最多 3 张。"><svg class="icon" aria-hidden="true"><use href="#i-upload"></use></svg><span>上传资料</span></button>
+            <button id="manage-question-attachments" class="icon-button" type="button" title="管理输入框上传的文件"><svg class="icon" aria-hidden="true"><use href="#i-file"></use></svg><span>附件管理</span></button>
+            </div>
+            <span class="composer-shortcut" aria-hidden="true">Enter 发送</span>
             <button id="send-button" class="send-button" type="submit" aria-label="发送问题">
               <svg class="icon"><use href="#i-send"></use></svg>
             </button>

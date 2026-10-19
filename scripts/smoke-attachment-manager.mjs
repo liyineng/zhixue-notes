@@ -41,6 +41,11 @@ const open=async()=>{await page.locator('#manage-question-attachments').click();
 const card=id=>page.locator(`[data-attachment-id="${id}"]`);
 try {
  await page.goto(process.env.APP_URL||'http://127.0.0.1:8765',{waitUntil:'networkidle'});
+ await fs.mkdir('artifacts/attachment-manager',{recursive:true});
+ await page.screenshot({path:'artifacts/attachment-manager/composer-desktop.png'});
+ await page.setViewportSize({width:390,height:844});
+ await page.screenshot({path:'artifacts/attachment-manager/composer-mobile.png'});
+ await page.setViewportSize({width:1440,height:1000});
  await open();assert.equal(await page.locator('.managed-attachment').count(),3);
  assert.equal(details,0,'list must not fetch every OCR body');
  await page.locator('#managed-attachment-search').fill('TCP');

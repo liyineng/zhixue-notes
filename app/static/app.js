@@ -143,8 +143,8 @@ function selectionStatus() {
   ui["select-all-sources"].checked = !!state.documents.length && selectedIds().length === state.documents.length;
   ui["select-all-sources"].indeterminate = selectedIds().length > 0 && selectedIds().length < state.documents.length;
   dom.questionInput.placeholder = selectedIds().length
-    ? '结合已选资料提问，Enter 发送，Shift+Enter 换行'
-    : '输入问题，未勾选资料时按通用知识回答';
+    ? '结合已选资料提问…'
+    : '输入问题，或上传题目资料…';
   const heading = document.querySelector("#empty-chat h1");
   if (heading) heading.textContent = state.documents.length ? "从这个笔记本开始提问" : "上传资料后开始提问";
 }
