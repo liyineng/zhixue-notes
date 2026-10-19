@@ -41,7 +41,7 @@ try {
     assert(bounds.scroll<=bounds.client+2,'reflowed formula should fit chat pane');
     assert.equal(await page.locator('.answer-math').first().getAttribute('tabindex'),'0');
     assert.match(await page.locator('#model-context-status').textContent(),/1,048,576/);
-    assert.equal(await page.locator('#top-k').inputValue(),'0');
+    assert.equal(await page.locator('#top-k').inputValue(),'6');
     assert.equal(await page.locator('#top-k').getAttribute('min'),'0');
     assert.match(await page.locator('#top-k').locator('..').textContent(),/0 为全部/);
     // Settings controls can be exercised without opening or changing saved data.

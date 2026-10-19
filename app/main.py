@@ -765,7 +765,7 @@ async def ask(payload: AskRequest) -> dict[str, Any]:
 async def _ask(payload: AskRequest, exchange_id: str) -> dict[str, Any]:
     settings = db.get_settings()
     model_context = await resolve_context(settings)
-    top_k = payload.top_k if payload.top_k is not None else int(settings.get("top_k", 0))
+    top_k = payload.top_k if payload.top_k is not None else int(settings.get("top_k", 6))
     selected_documents = _scope(payload.notebook_id, payload.document_ids)
     if not payload.question.strip() and not payload.image_ids:
         raise HTTPException(status_code=400, detail="请输入问题或上传问题附件。")

@@ -1255,7 +1255,7 @@ async function loadSettings() {
   document.querySelector("#model-name").value = state.settings.model || "";
   document.querySelector("#temperature").value = state.settings.temperature ?? 0.2;
   document.querySelector("#max-tokens").value = state.settings.max_tokens ?? 1400;
-  document.querySelector("#top-k").value = state.settings.top_k ?? 0;
+  document.querySelector("#top-k").value = state.settings.top_k ?? 6;
   document.querySelector('#context-window').value = state.settings.context_window || 0;
   renderModelContext(state.settings.model_context);
   document.querySelector("#vision-model").value = state.settings.vision_model || "";

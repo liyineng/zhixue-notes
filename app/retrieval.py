@@ -222,7 +222,7 @@ class BM25Index:
     def search(
         self,
         query: str,
-        top_k: int = 0,
+        top_k: int = 6,
         document_ids: set[str] | None = None,
     ) -> list[SearchResult]:
         query_tokens = set(tokenize(query))

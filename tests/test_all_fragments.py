@@ -15,7 +15,7 @@ class AllFragmentTests(unittest.TestCase):
     notebook = test_workspace.WorkspaceTests.notebook
     upload = test_workspace.WorkspaceTests.upload
 
-    def test_default_all_passes_every_matching_page_and_preserves_scope(self):
+    def test_default_six_and_optional_all_preserve_scope(self):
         notebook = self.notebook('全部片段')
         other = self.notebook('其他课程')
         self.upload(other, 'private.md', 'TCP foreign source')
@@ -26,11 +26,17 @@ class AllFragmentTests(unittest.TestCase):
         result = self.client.post('/api/documents', params={'notebook_id': notebook},
             files={'file': ('course.pdf', raw, 'application/pdf')})
         document = result.json()['document']['id']
-        self.assertEqual(self.client.get('/api/settings').json()['top_k'], 0)
+        self.assertEqual(self.client.get('/api/settings').json()['top_k'], 6)
         planner = AsyncMock(return_value={'intent': 'question', 'needs_retrieval': True,
                                          'search_query': 'TCP', 'keywords': []})
         answer = AsyncMock(return_value='课程规则 [30]。')
         with patch.object(main, 'analyze_question', planner), patch.object(main, 'answer_question', answer):
+            answer.return_value = '课程规则 [6]。'
+            response = self.client.post('/api/ask', json={'notebook_id': notebook, 'question': 'TCP规则是什么', 'document_ids': [document]})
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertEqual(len(answer.call_args.args[1]), 6)
+            self.client.put('/api/settings', json={'top_k': 0})
+            answer.return_value = '课程规则 [30]。'
             response = self.client.post('/api/ask', json={'notebook_id': notebook, 'question': 'TCP规则是什么', 'document_ids': [document]})
             self.assertEqual(response.status_code, 200, response.text)
             contexts = answer.call_args.args[1]
