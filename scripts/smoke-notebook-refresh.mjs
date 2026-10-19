@@ -51,6 +51,18 @@ try {
   assert.equal(await page.locator('#notebook-select').inputValue(), 'networks');
   await page.goto(`${base}/?notebook_id=missing`, { waitUntil: 'networkidle' }); await ready();
   assert.equal(new URL(page.url()).searchParams.get('notebook_id'), await page.locator('#notebook-select').inputValue());
+  // Quiz return links open applications once. Ordinary refresh always starts
+  // at sources, even if a stored library preference still says applications.
+  await page.goto(`${base}/?notebook_id=default&library=applications&keep=value#reading`, { waitUntil: 'networkidle' }); await ready();
+  assert.equal(await page.locator('#applications-tab').getAttribute('aria-selected'), 'true');
+  assert.equal(new URL(page.url()).searchParams.has('library'), false);
+  assert.equal(new URL(page.url()).searchParams.get('keep'), 'value');
+  assert.equal(new URL(page.url()).hash, '#reading');
+  await page.reload({ waitUntil: 'networkidle' }); await ready();
+  assert.equal(await page.locator('#sources-tab').getAttribute('aria-selected'), 'true');
+  await page.locator('#applications-tab').click();
+  await page.reload({ waitUntil: 'networkidle' }); await ready();
+  assert.equal(await page.locator('#sources-tab').getAttribute('aria-selected'), 'true');
   assert.deepEqual(errors, []);
-  console.log('Notebook switching survives refresh; direct links, local preferences, URL/hash preservation and invalid-target fallback passed.');
+  console.log('Notebook refresh, course links, one-time quiz return tab, default sources, URL/hash preservation and invalid-target fallback passed.');
 } finally { await browser.close(); }

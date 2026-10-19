@@ -139,6 +139,8 @@ try {
   assert((await sidebar.boundingBox()).width < changedWidth - 10);
   await page.locator('#sidebar-resizer').dblclick(); await page.locator('#workspace-resizer').dblclick();
   assert.equal(Math.round((await sidebar.boundingBox()).width), 276);
+  assert.equal(await page.locator('#sources-tab').getAttribute('aria-selected'), 'true');
+  await page.locator('#applications-tab').click();
   await page.screenshot({ path: path.join(output, 'application-library-desktop.png') });
   const conversation = page.locator('article[data-message-id="fixture-conversation"]');
   await conversation.evaluate(element => element.dataset.preserved = 'yes');

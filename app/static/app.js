@@ -1658,6 +1658,12 @@ window.addEventListener("resize", () => {
 
 function setLibraryTab(tab) {
   if (!['sources', 'notes', 'applications'].includes(tab)) tab = 'sources';
+  // A quiz return link targets a tab once, rather than pinning every refresh.
+  const url = new URL(location.href);
+  if (url.searchParams.has('library')) {
+    url.searchParams.delete('library');
+    history.replaceState(history.state, '', url);
+  }
   for (const name of ['sources', 'notes', 'applications']) ui[`${name}-content`].hidden = name !== tab;
   localStorage.setItem(`zhixue-library-tab:${state.notebookId}`, tab);
   for (const id of ["sources-tab", "notes-tab", "applications-tab"]) {
@@ -2048,15 +2054,13 @@ document.getElementById("move-form").addEventListener("submit", async (event) =>
 });
 
 async function initialize() {
+  const entryTab = new URLSearchParams(location.search).get('library');
   setBusy(true);
   try {
     await loadNotebooks();
     await Promise.all([loadDocuments(true), loadNotes(), loadSettings(), loadChat()]);
-    setLibraryTab(localStorage.getItem(`zhixue-library-tab:${state.notebookId}`) || 'sources');
-    if (new URLSearchParams(location.search).get('library') === 'applications') {
-      setLibraryTab('applications');
-      if (innerWidth <= 760) setMobilePane('sources');
-    }
+    setLibraryTab(entryTab || 'sources');
+    if (entryTab && innerWidth <= 760) setMobilePane('sources');
   } catch (error) {
     showToast(`初始化失败：${error.message}`, true);
   } finally { setBusy(state.chatPending); }
