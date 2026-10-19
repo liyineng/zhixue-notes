@@ -48,14 +48,16 @@ def validate_questions(data: Any, contexts: list[dict], limit: int) -> list[dict
             question[key] = value.strip()
         for key in ('prompt', 'explanation'):
             text, used = cited_sources(question[key], contexts, renumber=False)
-            if any(c['index'] not in sources for c in used):
-                raise ValueError('题目中的引用与其来源列表不一致。')
+            # Both fields describe source IDs. Reconcile omissions only after
+            # cited_sources has checked every inline ID against this batch.
+            question['sources'] = list(dict.fromkeys([*question['sources'], *(c['index'] for c in used)]))
             question[key] = text
         for i, option in enumerate(options):
             text, used = cited_sources(option, contexts, renumber=False)
-            if any(c['index'] not in sources for c in used):
-                raise ValueError('选项中的引用与其来源列表不一致。')
+            question['sources'] = list(dict.fromkeys([*question['sources'], *(c['index'] for c in used)]))
             question['options'][i] = text
+        if len(question['sources']) > 6:
+            raise ValueError('每道测验最多引用六个资料片段，请精简后重新生成。')
         if any(re.search(r'[\x00-\x09\x0b-\x1f\x7f]', text)
                for text in [question['prompt'], question['explanation'], *question['options']]):
             raise ValueError('公式的 JSON 反斜杠转义错误，请用双反斜杠表示 LaTeX 命令。')
@@ -78,7 +80,7 @@ async def build_quiz(contexts: list[dict], settings: dict, *, count: str, diffic
                 '结构：{"questions":[{"prompt":"题干","options":["选项1","选项2","选项3","选项4"],'
                 '"answer":0,"explanation":"正确答案依据和其他选项错误原因","sources":[1]}]}。'
                 'answer 是从 0 开始的正确选项索引，四个选项只能一个正确，正确答案位置应变化。干扰项合理，不使用以上都对/都不对。'
-                '每题 sources 必须包含直接支持正确答案的本批实际引用编号。不要在题干或选项中透露答案。'
+                '每题 sources 必须包含直接支持正确答案的本批实际引用编号，以及解析中使用的所有引用编号。不要在题干或选项中透露答案。'
                 '不从常识补猜课件没给出的公式或条件，看不清的图片内容不得出题。'
                 '题干、选项不要插入引用标记，解析可引用 sources 中的编号。'
                 '覆盖不同知识点，若给出主题则只出相关题；资料不足允许少出或返回空 questions，禁止凑题。'

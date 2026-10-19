@@ -160,6 +160,38 @@ class QuizTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             validate_questions({'questions': [question(22)]}, contexts[:1], 1)
 
+    def test_inline_batch_citations_missing_from_sources_are_merged_and_renumbered(self):
+        contexts = [{'index': n, 'document_id': 'selected', 'document_name': '课件',
+                     'page': n, 'text': '资料依据'} for n in (7, 22, 31)]
+        item = question(7)
+        item['explanation'] = r'依据【22】和 [7]，公式 \(x[99]=1\)，代码 `a[88]`。'
+        item['options'][1] += ' [31]'
+        completion = AsyncMock(return_value=json.dumps({'questions': [item]}))
+        with patch('app.quizzes.chat_completion', completion):
+            result = asyncio.run(build_quiz(contexts, {'base_url': 'mock', 'model': 'mock'}, count='less',
+                difficulty='medium', language='zh-CN', topic='', on_batch=AsyncMock()))
+        self.assertEqual(completion.await_count, 1)
+        saved = result['questions'][0]
+        self.assertEqual(saved['sources'], [1, 2, 3])
+        self.assertEqual(saved['explanation'], r'依据[2]和 [1]，公式 \(x[99]=1\)，代码 `a[88]`。')
+        self.assertEqual(saved['options'][1], '电感为零 [3]')
+        self.assertEqual([c['page'] for c in result['citations']], [7, 22, 31])
+        self.assertEqual(item['sources'], [7], 'validation must not mutate model input')
+
+    def test_inline_foreign_citations_and_excess_sources_still_fail(self):
+        for field in ('prompt', 'explanation', 'option'):
+            item = question()
+            if field == 'option':
+                item['options'][1] += ' [999]'
+            else:
+                item[field] += ' [999]'
+            with self.assertRaisesRegex(RuntimeError, '不存在'):
+                validate_questions({'questions': [item]}, [{'index': 1}], 1)
+        item = question()
+        item['explanation'] = ' '.join(f'[{n}]' for n in range(1, 8))
+        with self.assertRaisesRegex(ValueError, '最多引用六个'):
+            validate_questions({'questions': [item]}, [{'index': n} for n in range(1, 8)], 1)
+
     def test_unescaped_math_json_retries_same_batch_with_structured_mode(self):
         contexts = [{'index': 1, 'document_id': 'selected', 'document_name': '第二章', 'page': 1, 'text': '谐振公式'}]
         invalid = r'{"questions":[{"prompt":"计算 \(Q\)","options":["a","b","c","d"],"answer":0,"explanation":"说明","sources":[1]}]}'
