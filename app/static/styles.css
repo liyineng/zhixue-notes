@@ -920,6 +920,8 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .generation-detail { color: inherit; }
 .unavailable-reference { color: var(--muted); font-size: .85em; }
 .answer-math, .message-body .katex-display { max-width: 100%; overflow-x: auto; overflow-y: hidden; }
+.answer-math .katex-display { overflow: visible; }
+.answer-math:focus-visible { outline: 2px solid var(--accent, #5865d8); outline-offset: 2px; }
 .message-body .katex { font-size: 1.05em; }
 .summary-source-coverage { margin: 8px 0 12px; color: var(--muted); font-size: 12px; }
 .summary-source-coverage summary { cursor: pointer; }
@@ -1348,3 +1350,7 @@ body.quiz-page { overflow: auto; height: auto; min-height: 100dvh; background: v
 .draft-document > span { margin-top: 6px; }
 .message-attachment { max-width: 100%; padding: 10px 14px; border: 1px solid var(--line); border-radius: 8px; color: var(--navy); font-size: 13px; overflow-wrap: anywhere; text-decoration: none; background: var(--paper); }
 @media (max-width: 760px) { .question-image-draft { padding: 10px 14px; } }
+.context-settings { display: flex; align-items: center; gap: 12px; margin: 8px 0 18px; }
+.context-settings .settings-note { flex: 1; line-height: 1.7; margin: 0; }
+.context-settings .button { flex-shrink: 0; margin: 0; font-size: 12px; }
+@media (max-width: 760px) { .context-settings { align-items: flex-start; flex-direction: column; } }

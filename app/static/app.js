@@ -1256,11 +1256,31 @@ async function loadSettings() {
   document.querySelector("#temperature").value = state.settings.temperature ?? 0.2;
   document.querySelector("#max-tokens").value = state.settings.max_tokens ?? 1400;
   document.querySelector("#top-k").value = state.settings.top_k ?? 6;
+  document.querySelector('#context-window').value = state.settings.context_window || 0;
+  renderModelContext(state.settings.model_context);
   document.querySelector("#vision-model").value = state.settings.vision_model || "";
   document.querySelector("#vision-base-url").value = state.settings.vision_base_url || "";
   document.querySelector("#vision-api-key").value = "";
   document.querySelector("#vision-api-key").placeholder = state.settings.vision_api_key_set ? "已保存，留空保留" : "独立接口使用对应密钥";
 }
+
+function renderModelContext(info) {
+  const target = document.getElementById('model-context-status');
+  if (!info) { target.textContent = '按模型容量使用历史对话，优先保留当前问题和资料。'; return; }
+  const label = { provider_api: '接口返回', provider_documentation: '服务商规格', manual: '手动设置', fallback: '未识别，暂用保守值，可手动填写' }[info.source];
+  target.textContent = `${Number(info.context_window).toLocaleString()} tokens · ${label}。历史按预算保留，计数采用保守估算。`;
+}
+
+document.getElementById('detect-model-context').addEventListener('click', async event => {
+  const button = event.currentTarget; button.disabled = true;
+  try { renderModelContext(await api('/api/model-context')); }
+  catch (error) { showToast(error.message, true); }
+  finally { button.disabled = false; }
+});
+for (const id of ['base-url', 'model-name']) document.getElementById(id).addEventListener('input', () => {
+  document.getElementById('context-window').value = 0;
+  document.getElementById('model-context-status').textContent = '保存后自动检测此模型的上下文窗口。';
+});
 
 async function saveSettings(event) {
   event.preventDefault();
@@ -1270,6 +1290,7 @@ async function saveSettings(event) {
     model: document.querySelector("#model-name").value.trim(),
     temperature: Number(document.querySelector("#temperature").value),
     max_tokens: Number(document.querySelector("#max-tokens").value),
+    context_window: Number(document.querySelector('#context-window').value) || 0,
     top_k: Number(document.querySelector("#top-k").value),
     vision_model: document.querySelector("#vision-model").value.trim(),
     vision_base_url: document.querySelector("#vision-base-url").value.trim(),

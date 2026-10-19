@@ -24,7 +24,8 @@ from . import db, generation, cloud_sync
 from .attachment_followups import recover_attachment_problem
 from .quizzes import build_quiz, save_attempt, COUNTS
 from .previews import presentation_pdf, presentation_page_geometry, PreviewError
-from .conversation import MAX_TURNS, MAX_CONTEXT_CHARS, recent_context, referenced_sources
+from .conversation import recent_context, referenced_sources
+from .model_context import context_info, resolve_context, history_budget, source_reserve, estimate_tokens
 from .progress import source_activity
 from .summaries import summary_batches
 from .config import (
@@ -163,6 +164,7 @@ class SettingsRequest(BaseModel):
     model: str | None = Field(default=None, max_length=300)
     temperature: float | None = Field(default=None, ge=0, le=2)
     max_tokens: int | None = Field(default=None, ge=128, le=8192)
+    context_window: int | None = Field(default=None, ge=0, le=10000000)
     top_k: int | None = Field(default=None, ge=1, le=12)
     vision_model: str | None = Field(default=None, max_length=300)
     vision_base_url: str | None = Field(default=None, max_length=1000)
@@ -230,6 +232,7 @@ def _public_settings(settings: dict[str, Any]) -> dict[str, Any]:
     result["api_key_set"] = bool(str(settings.get("api_key", "")).strip())
     result["model_configured"] = model_configured(settings)
     result["vision_api_key_set"] = bool(str(settings.get("vision_api_key", "")).strip())
+    result['model_context'] = context_info(settings)
     return result
 
 
@@ -717,6 +720,8 @@ def get_settings() -> dict[str, Any]:
 def update_settings(payload: SettingsRequest) -> dict[str, Any]:
     current = db.get_settings()
     values = payload.model_dump(exclude_none=True)
+    if any(key in values and values[key] != current.get(key) for key in ('model', 'base_url')) and 'context_window' not in values:
+        values['context_window'] = 0
     vision_provider_changed = "vision_base_url" in values and str(values["vision_base_url"]).strip().rstrip("/") != str(current.get("vision_base_url", "")).rstrip("/")
     if vision_provider_changed and not str(values.get("vision_api_key", "")).strip():
         values["vision_api_key"] = ""
@@ -744,6 +749,11 @@ def update_settings(payload: SettingsRequest) -> dict[str, Any]:
     return _public_settings(merged)
 
 
+@app.get('/api/model-context')
+async def detect_model_context() -> dict[str, Any]:
+    return await resolve_context(db.get_settings(), force=True)
+
+
 @app.post("/api/ask")
 async def ask(payload: AskRequest) -> dict[str, Any]:
     payload = payload.model_copy(update={'notebook_id': payload.notebook_id or 'default'})
@@ -754,6 +764,7 @@ async def ask(payload: AskRequest) -> dict[str, Any]:
 
 async def _ask(payload: AskRequest, exchange_id: str) -> dict[str, Any]:
     settings = db.get_settings()
+    model_context = await resolve_context(settings)
     top_k = payload.top_k or int(settings.get("top_k", 6))
     selected_documents = _scope(payload.notebook_id, payload.document_ids)
     if not payload.question.strip() and not payload.image_ids:
@@ -780,21 +791,31 @@ async def _ask(payload: AskRequest, exchange_id: str) -> dict[str, Any]:
 
     document_names = [document["name"] for document in selected_documents]
     question = payload.question.strip() or "请解答附件中的题目，并结合选中的课程资料。"
-    previous_exchanges = [parent] if parent else db.recent_completed_exchanges(payload.notebook_id, MAX_TURNS)
+    previous_exchanges = [parent] if parent else db.recent_completed_exchanges(payload.notebook_id)
+    evidence_reserve = source_reserve(selected_documents) + (80000 if images else 0)
+    current_input = question + (payload.image_text or '') + ''.join(item['ocr_text'] for item in images)
+    if not parent:
+        # Resolve old citation numbers and attachment follow-ups only inside the
+        # same model-bounded history that ordinary conversation can actually use.
+        _, retained_turns = recent_context(previous_exchanges, history_budget(
+            model_context, settings, current_input, evidence_reserve))
+        previous_exchanges = previous_exchanges[-retained_turns:] if retained_turns else []
     references = referenced_sources(question, previous_exchanges, document_ids)
     reference_hint = '\n'.join(f"历史引用 {c['index']} → 《{c['document_name'][:150]}》" +
                                (f"第 {c['page']} 页" if c.get('page') else '对应文字片段') for c in references)
-    history, context_turns = recent_context(previous_exchanges) if not reply_to else ('', 0)
     try:
         attachment_followup = recover_attachment_problem(question, previous_exchanges, payload.notebook_id) if not images else None
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     attachment_text = attachment_followup['text'] if attachment_followup else ''
+    budget = history_budget(model_context, settings, question + reference_hint + attachment_text +
+                            (payload.image_text or '') + ''.join(item['ocr_text'] for item in images) +
+                            str(reply_to.get('answer', '')), evidence_reserve)
+    history, context_turns = recent_context(previous_exchanges, budget) if not reply_to else ('', 0)
     if attachment_followup and not reply_to:
         # The exact original exercise is sufficient context. Do not carry an
         # unrelated or incorrect old solution into this targeted follow-up.
         history, context_turns = '', 0
-    history = history[:max(0, MAX_CONTEXT_CHARS - len(reference_hint) - len(attachment_text))]
     retained_attachments = images
     if attachment_followup:
         identities = dict.fromkeys(item['attachment_id'] for item in attachment_followup['references'])
@@ -963,6 +984,9 @@ async def _ask(payload: AskRequest, exchange_id: str) -> dict[str, Any]:
         "image_recognition_mode": image_mode,
         "question_attachment_refs": attachment_followup['references'] if attachment_followup else [],
         "context_turns": context_turns,
+        "context_window": model_context['context_window'],
+        "context_window_source": model_context['source'],
+        "history_tokens_estimated": estimate_tokens(history),
     }
     if not db.finish_pending_exchange(exchange_id, result):
         raise generation.cancelled_error(exchange_id)

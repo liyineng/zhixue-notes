@@ -3,7 +3,8 @@ from unittest.mock import AsyncMock, patch
 
 import test_workspace
 from app import db, main
-from app.conversation import MAX_CONTEXT_CHARS, recent_context, referenced_sources
+from app.conversation import recent_context, referenced_sources
+from app.model_context import estimate_tokens
 import pymupdf
 
 
@@ -33,11 +34,11 @@ class ConversationTests(unittest.TestCase):
         with patch.object(main, 'analyze_question', planner), patch.object(main, 'answer_question', answer):
             result = self.client.post('/api/ask', json={'notebook_id': notebook, 'question': '再解释一下它', 'document_ids': []})
         self.assertEqual(result.status_code, 200, result.text)
-        self.assertEqual(result.json()['context_turns'], 3)
+        self.assertEqual(result.json()['context_turns'], 4)
         prompt, sources = answer.call_args.args[:2]
         self.assertEqual(sources, [])  # Even with uploaded sources and history, empty means empty.
         self.assertEqual(planner.call_args.args[0], prompt)
-        self.assertNotIn('有效答案0', prompt)
+        self.assertIn('有效答案0', prompt)
         for i in range(1, 4):
             self.assertIn(f'有效答案{i}', prompt)
         self.assertLess(prompt.index('有效答案1'), prompt.index('有效答案3'))
@@ -52,10 +53,10 @@ class ConversationTests(unittest.TestCase):
     def test_long_history_is_bounded_and_keeps_recent_answer_ending(self):
         exchanges = [{'question': '题' * 4000, 'result': {'answer': '答' * 20000 + '最后结论',
                       'image_question_text': '图' * 20000}} for _ in range(4)]
-        text, turns = recent_context(exchanges)
-        self.assertEqual(turns, 3)
-        self.assertLessEqual(len(text), MAX_CONTEXT_CHARS)
-        self.assertEqual(text.count('最后结论'), 3)
+        text, turns = recent_context(exchanges, token_budget=8000)
+        self.assertEqual(turns, 1)
+        self.assertLessEqual(estimate_tokens(text), 8000)
+        self.assertEqual(text.count('最后结论'), 1)
         self.assertIn('上下文已截短', text)
 
     def test_first_question_has_no_history_wrapper(self):

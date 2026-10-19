@@ -426,13 +426,14 @@ def exchange_exists(exchange_id: str) -> bool:
         return bool(conn.execute('SELECT 1 FROM chat_exchanges WHERE id=?', (exchange_id,)).fetchone())
 
 
-def recent_completed_exchanges(notebook_id: str, limit: int) -> list[dict[str, Any]]:
+def recent_completed_exchanges(notebook_id: str, limit: int | None = None) -> list[dict[str, Any]]:
     with connection() as conn:
         rows = conn.execute("""SELECT id, question, result_json, images_json FROM chat_exchanges
             WHERE notebook_id=? AND status='complete' AND deleted_at IS NULL
             AND length(trim(coalesce(json_extract(result_json, '$.answer'), ''))) > 0
             AND coalesce(json_extract(result_json, '$.cancelled'), 0)=0
-            ORDER BY created_at DESC, sequence DESC LIMIT ?""", (notebook_id, limit)).fetchall()
+            AND json_type(result_json, '$.quiz') IS NULL
+            ORDER BY created_at DESC, sequence DESC LIMIT ?""", (notebook_id, limit if limit is not None else -1)).fetchall()
     return [{'id': row['id'], 'question': row['question'], 'result': json.loads(row['result_json']),
              'images': json.loads(row['images_json'])} for row in reversed(rows)]
 

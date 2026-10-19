@@ -39,6 +39,28 @@ function cells(line) {
   return result;
 }
 
+// Reflow only top-level operators in long display equations. Braced text,
+// fractions, existing environments and code literals keep their exact contents.
+function readableDisplay(body) {
+  if (body.trim().length < 60 || /\\(?:begin|left|right)\b|\\\\|&/.test(body)) return body;
+  const pieces = [];
+  let depth = 0, start = 0;
+  for (let i = 0; i < body.length; i++) {
+    if (body[i] === '\\') { i++; continue; }
+    if (body[i] === '{') depth++;
+    if (body[i] === '}') depth--;
+    if (depth === 0 && i > start && /[=+]/.test(body[i]) && body.slice(start, i).trim()) {
+      pieces.push(body.slice(start, i).trim()); start = i;
+    }
+  }
+  pieces.push(body.slice(start).trim());
+  if (pieces.length < 3) return body;
+  const first = pieces.shift();
+  return '\\begin{aligned}\n' + pieces.map((part, i) =>
+    (i === 0 ? first : '') + '&' + (part.startsWith('+') ? '\\quad ' : '') + part
+  ).join(' \\\\\n') + '\n\\end{aligned}';
+}
+
 export function renderAnswerHtml(text, citations = []) {
   const references = new Set(citations.map((c) => Number(c.index)));
   const lines = String(text || '').replace(/\r\n?/g, '\n').split('\n');
@@ -60,7 +82,8 @@ export function renderAnswerHtml(text, citations = []) {
       const block = math.join('\n');
       const closing = block.indexOf(delimiter, 2);
       const end = closing < 0 ? block.length : closing + delimiter.length;
-      out.push(`<div class="answer-math">${escape(block.slice(0, end))}${render(block.slice(end))}</div>`);
+      const mathText = closing < 0 ? block : block.slice(0, 2) + readableDisplay(block.slice(2, closing)) + delimiter;
+      out.push(`<div class="answer-math" role="region" aria-label="数学公式" tabindex="0">${escape(mathText)}${render(block.slice(end))}</div>`);
       continue;
     }
     const fence = line.match(/^(`{3,}|~{3,})/);

@@ -296,6 +296,11 @@
             <input id="top-k" type="number" min="1" max="12" step="1" value="6" />
           </label>
         </div>
+        <label>
+          <span>模型上下文窗口（tokens，0 为自动）</span>
+          <input id="context-window" type="number" min="0" max="10000000" step="1" value="0" />
+        </label>
+        <div class="context-settings"><span id="model-context-status" class="settings-note"></span><button id="detect-model-context" class="button ghost" type="button">检测已保存模型</button></div>
         <details class="vision-settings">
           <summary>图片识别模型（选填）</summary>
           <p>未填写模型时使用本机 OCR。复杂公式、图表可填写支持图片的模型。</p>
