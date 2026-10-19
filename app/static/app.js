@@ -770,6 +770,7 @@ function updateAssistantMessage(messageId, answer, citations, mode, sourceMode, 
   state.messageCitations.set(messageId, citations || []);
   const article = dom.messages.querySelector(`[data-message-id="${messageId}"]`);
   if (!article) return;
+  article.dataset.answerSignature = JSON.stringify([answer, citations || [], mode || '', sourceMode || '', options.coverage || null]);
   const body = article.querySelector(".message-body");
   body.innerHTML = renderAnswerHtml(answer, citations || []);
   renderMathInElement(body, {
@@ -942,7 +943,7 @@ async function pollGenerationProgress(job) {
 
 function startGeneration(question, messageId) {
   if (innerWidth <= 760) setMobilePane('chat');
-  const job = { id: crypto.randomUUID(), notebookId: state.notebookId, controller: new AbortController(), question, cancelled: false };
+  const job = { id: messageId, notebookId: state.notebookId, controller: new AbortController(), question, cancelled: false };
   job.messageId = messageId;
   state.activeGeneration = job;
   job.progressTimer = window.setTimeout(() => pollGenerationProgress(job), 300);
@@ -1043,7 +1044,7 @@ function addRecognizedText(article, text, mode) {
   const details = document.createElement("details");
   details.className = "image-recognition";
   const summary = document.createElement("summary");
-  const label = { vision: '视觉模型', manual: '已校对', document: '文档提取', mixed: '文档与图片', ocr: '本机 OCR' }[mode] || '本机 OCR';
+  const label = { vision: '视觉模型', manual: '已校对', document: '文档提取', mixed: '文档与图片', attachment_followup: '按题号重读附件', ocr: '本机 OCR' }[mode] || '本机 OCR';
   summary.textContent = `识别到的题目（${label}）`;
   const body = document.createElement("div");
   body.textContent = text;
@@ -1115,8 +1116,9 @@ async function askQuestion(question) {
   if (state.busy) return showToast("请等待当前回答完成。");
   window.__lastQuestionTerms = extractSearchTerms(text);
   const replyTo = state.replyTo;
-  const userId = addMessage("user", text || "请解答附件中的题目，并结合选中的课程资料。", { images, replyTo });
-  const assistantId = addMessage("assistant", "", { loading: true });
+  const requestId = crypto.randomUUID();
+  const userId = addMessage("user", text || "请解答附件中的题目，并结合选中的课程资料。", { id: `user-${requestId}`, images, replyTo });
+  const assistantId = addMessage("assistant", "", { id: requestId, loading: true });
   const job = startGeneration(text, assistantId);
   setBusy(true);
   try {
@@ -1295,8 +1297,9 @@ async function generateSummary(configuration = {}) {
     return;
   }
   setBusy(true);
-  const userId = addMessage("user", "根据当前选中的来源生成一份复习提纲。");
-  const assistantId = addMessage("assistant", "", { loading: true });
+  const requestId = crypto.randomUUID();
+  const userId = addMessage("user", "根据当前选中的来源生成一份复习提纲。", { id: `user-${requestId}` });
+  const assistantId = addMessage("assistant", "", { id: requestId, loading: true });
   const job = startGeneration('根据当前选中的来源生成一份复习提纲。', assistantId);
   updateCancelButton();
   try {
@@ -1468,8 +1471,9 @@ document.addEventListener('keydown', event => { if (event.key === 'Escape' && !d
 async function generateQuiz(configuration) {
   if (state.busy) return;
   const question = `根据勾选来源生成 ${ {less:5, standard:10, more:15}[configuration.count] } 道交互式测验。${configuration.topic ? `主题：${configuration.topic}` : ''}`;
-  const userId = addMessage('user', question);
-  const assistantId = addMessage('assistant', '', { loading: true });
+  const requestId = crypto.randomUUID();
+  const userId = addMessage('user', question, { id: `user-${requestId}` });
+  const assistantId = addMessage('assistant', '', { id: requestId, loading: true });
   const job = startGeneration(question, assistantId);
   setBusy(true);
   try {
@@ -1747,7 +1751,10 @@ async function loadChat(polling = false) {
     const id = exchange.id;
     if (exchange.status === "complete") {
       const result = exchange.result;
-      updateAssistantMessage(id, result.answer, result.citations, result.mode, result.source_mode, { question: exchange.question, coverage: result.summary_coverage });
+      const answerSignature = JSON.stringify([result.answer, result.citations || [], result.mode || '', result.source_mode || '', result.summary_coverage || null]);
+      if (article.dataset.answerSignature !== answerSignature) {
+        updateAssistantMessage(id, result.answer, result.citations, result.mode, result.source_mode, { question: exchange.question, coverage: result.summary_coverage });
+      }
       const user = dom.messages.querySelector(`[data-message-id="user-${exchange.id}"]`);
       if (result.image_question_text && !user.querySelector('.image-recognition')) addRecognizedText(user, result.image_question_text, result.image_recognition_mode);
     } else if (exchange.status === "error") {

@@ -21,6 +21,7 @@ from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
 from . import db, generation, cloud_sync
+from .attachment_followups import recover_attachment_problem
 from .quizzes import build_quiz, save_attempt, COUNTS
 from .previews import presentation_pdf, presentation_page_geometry, PreviewError
 from .conversation import MAX_TURNS, MAX_CONTEXT_CHARS, recent_context, referenced_sources
@@ -784,13 +785,31 @@ async def _ask(payload: AskRequest, exchange_id: str) -> dict[str, Any]:
     reference_hint = '\n'.join(f"历史引用 {c['index']} → 《{c['document_name'][:150]}》" +
                                (f"第 {c['page']} 页" if c.get('page') else '对应文字片段') for c in references)
     history, context_turns = recent_context(previous_exchanges) if not reply_to else ('', 0)
-    history = history[:max(0, MAX_CONTEXT_CHARS - len(reference_hint))]
-    db.start_exchange(exchange_id, payload.notebook_id or "default", question, [_public_image(image) for image in images], reply_to)
+    try:
+        attachment_followup = recover_attachment_problem(question, previous_exchanges, payload.notebook_id) if not images else None
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    attachment_text = attachment_followup['text'] if attachment_followup else ''
+    if attachment_followup and not reply_to:
+        # The exact original exercise is sufficient context. Do not carry an
+        # unrelated or incorrect old solution into this targeted follow-up.
+        history, context_turns = '', 0
+    history = history[:max(0, MAX_CONTEXT_CHARS - len(reference_hint) - len(attachment_text))]
+    retained_attachments = images
+    if attachment_followup:
+        identities = dict.fromkeys(item['attachment_id'] for item in attachment_followup['references'])
+        retained_attachments = [db.get_question_image(identity) for identity in identities]
+    db.start_exchange(exchange_id, payload.notebook_id or "default", question,
+                      [_public_image(item) for item in retained_attachments if item], reply_to)
 
     try:
         db.set_generation_progress(exchange_id, 'question', '读取问题附件' if images else '分析问题',
                                    '正在读取本次附件中的题干与已知条件。' if images else '正在理解问题和近期对话。')
         image_text, image_mode = await read_question(images, settings, payload.image_text) if images else ("", "")
+        if attachment_text:
+            db.set_generation_progress(exchange_id, 'question', '重读附件题干',
+                                       '正在按指定题号读取最近问题的原始附件，核对完整条件。')
+            image_text, image_mode = attachment_text, 'attachment_followup'
         effective_question = question
         if history:
             effective_question = (f"本次问题：{question}\n\n近期对话（按时间先后，仅用于理解指代；旧回答可能有错，"
@@ -804,6 +823,8 @@ async def _ask(payload: AskRequest, exchange_id: str) -> dict[str, Any]:
                                   f"原回答：\n{previous}\n\n请针对本次追问解释；资料依据必须重新从本次提供的资料片段中取得。")
         if image_text:
             effective_question += "\n\n用户本次问题的附件内容（用于理解题目，不属于课程来源，不要为附件编造来源引用；不确定处请指出）：\n" + image_text
+        if attachment_followup:
+            effective_question += '\n请以以上原始题干为准，逐项核对条件；历史回答可能解错题，不得据旧解答反推或补造题目。'
         if reference_hint:
             effective_question += '\n\n用户所指的历史引用定位（编号不是页码，本次依据会重新读取原文）：\n' + reference_hint
         db.set_generation_progress(exchange_id, 'analysis', '规划检索', '正在判断是否需要资料，并提炼检索关键词。')
@@ -815,7 +836,7 @@ async def _ask(payload: AskRequest, exchange_id: str) -> dict[str, Any]:
         formula_inventory = is_formula_inventory(question)
         if formula_inventory:
             analysis.update(intent='summary', needs_retrieval=True)
-        if any(Path(item['path']).suffix.lower() != '.png' for item in images):
+        if attachment_followup or any(Path(item['path']).suffix.lower() != '.png' for item in images):
             # A question document is supplied in full as the current question,
             # not a request to summarize every selected course source.
             analysis['intent'] = 'question'
@@ -940,6 +961,7 @@ async def _ask(payload: AskRequest, exchange_id: str) -> dict[str, Any]:
         "elapsed_ms": elapsed_ms,
         "image_question_text": image_text,
         "image_recognition_mode": image_mode,
+        "question_attachment_refs": attachment_followup['references'] if attachment_followup else [],
         "context_turns": context_turns,
     }
     if not db.finish_pending_exchange(exchange_id, result):
