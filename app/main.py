@@ -1287,6 +1287,17 @@ def restore_chat_exchange(notebook_id: str, exchange_id: str) -> dict[str, Any]:
     return {'restored': True, 'chat_id': restored, 'deleted_count': db.deleted_exchange_count(notebook_id)}
 
 
+@app.delete('/api/notebooks/{notebook_id}/chat/deleted/all')
+def clear_deleted_chat_exchanges(notebook_id: str) -> dict[str, Any]:
+    _notebook(notebook_id)
+    result = db.purge_all_deleted_exchanges(notebook_id)
+    for image in result['images']:
+        Path(image['path']).unlink(missing_ok=True)
+    return {'deleted': True, 'permanent': True, 'purged_count': len(result['ids']),
+            'deleted_image_ids': [image['id'] for image in result['images']],
+            'deleted_count': db.deleted_exchange_count(notebook_id)}
+
+
 @app.delete('/api/notebooks/{notebook_id}/chat/{exchange_id}/permanent')
 def permanently_delete_chat_exchange(notebook_id: str, exchange_id: str) -> dict[str, Any]:
     _notebook(notebook_id)

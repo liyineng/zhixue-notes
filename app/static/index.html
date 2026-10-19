@@ -249,7 +249,7 @@
 
     <dialog id="deleted-chat-dialog" class="settings-dialog deleted-chat-dialog" aria-labelledby="deleted-chat-title">
       <div class="dialog-heading"><div><h2 id="deleted-chat-title">已删除的对话</h2><p>保留当前笔记本最近 5 条删除记录，恢复时一并保留回答、引用和附件。</p></div><button id="close-deleted-chat" class="icon-button" type="button" aria-label="关闭删除记录">×</button></div>
-      <div class="deleted-chat-toolbar"><span id="deleted-chat-status" role="status"></span><button id="refresh-deleted-chat" type="button" class="button ghost">刷新</button></div>
+      <div class="deleted-chat-toolbar"><span id="deleted-chat-status" role="status"></span><div class="deleted-chat-toolbar-actions"><button id="refresh-deleted-chat" type="button" class="button ghost">刷新</button><button id="clear-deleted-chat" type="button" class="button ghost" disabled>一键清空</button></div></div>
       <div id="deleted-chat-list" class="deleted-chat-list"></div>
       <p class="deleted-chat-retention">新增删除记录超过 5 条时，最早的记录会自动清理。清空对话会同时清除删除记录。</p>
     </dialog>

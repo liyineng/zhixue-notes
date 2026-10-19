@@ -5,6 +5,7 @@ export function initializeDeletedChatPanel({api, notebookId, isBusy, onRestored,
   const dialog = document.getElementById('deleted-chat-dialog');
   const list = document.getElementById('deleted-chat-list');
   const status = document.getElementById('deleted-chat-status');
+  const clear = document.getElementById('clear-deleted-chat');
   let records = [], scope = null, revision = 0, working = false;
   const valid = () => dialog.open && scope === notebookId();
   const base = () => `/api/notebooks/${encodeURIComponent(scope)}/chat`;
@@ -60,7 +61,23 @@ export function initializeDeletedChatPanel({api, notebookId, isBusy, onRestored,
     } catch (error) { toast(error.message, true); }
     finally { working = false; if (valid()) { if (operationRevision !== revision) load(); else render(); } }
   }
+  async function clearRecords() {
+    if (!valid() || working || clear.disabled || !records.length) return;
+    if (isBusy()) return toast('请等待当前操作完成。');
+    if (!window.confirm(`永久清空当前笔记本的全部 ${records.length} 条删除记录？清空后无法恢复，仅被这些记录使用的附件也会清理。正常对话不受影响。`)) return;
+    const operationScope = scope, operationRevision = revision;
+    working = true; render();
+    try {
+      const data = await api(`${base()}/deleted/all`, {method:'DELETE'});
+      await onPurged(data, null, operationScope);
+      if (!valid() || scope !== operationScope) return;
+      records = [];
+      toast(`已永久清空 ${data.purged_count} 条删除记录。`);
+    } catch (error) { toast(error.message, true); }
+    finally { working = false; if (valid()) { if (operationRevision !== revision) load(); else render(); } }
+  }
   function render() {
+    clear.disabled = working || isBusy() || !records.length;
     const opened = new Set([...list.querySelectorAll('article')].filter(card => card.querySelector('details')?.open).map(card => card.dataset.deletedId));
     list.replaceChildren(); status.textContent = `可恢复 ${records.length} / 5 条 · 当前笔记本`;
     if (!records.length) {
@@ -91,7 +108,7 @@ export function initializeDeletedChatPanel({api, notebookId, isBusy, onRestored,
   }
   async function load() {
     if (working) return;
-    const version = ++revision; scope = notebookId(); status.textContent = '正在读取删除记录…'; list.replaceChildren();
+    const version = ++revision; scope = notebookId(); clear.disabled = true; status.textContent = '正在读取删除记录…'; list.replaceChildren();
     try {
       const data = await api(`${base()}/deleted`);
       if (version !== revision || !valid()) return;
@@ -101,10 +118,11 @@ export function initializeDeletedChatPanel({api, notebookId, isBusy, onRestored,
   document.getElementById('manage-deleted-chat').addEventListener('click', () => {
     dialog.showModal();
     if (working) {
-      scope = notebookId(); records = []; list.replaceChildren();
+      scope = notebookId(); records = []; clear.disabled = true; list.replaceChildren();
       status.textContent = '正在完成操作，请稍候…';
     } else load();
   });
+  clear.addEventListener('click', clearRecords);
   document.getElementById('refresh-deleted-chat').addEventListener('click', load);
   document.getElementById('close-deleted-chat').addEventListener('click', () => dialog.close());
   dialog.addEventListener('close', () => { revision++; });

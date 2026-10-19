@@ -577,16 +577,19 @@ def remove_unused_attachment(notebook_id: str, attachment_id: str) -> str | None
         return row['path']
 
 
-def purge_deleted_exchange(notebook_id: str, exchange_id: str) -> dict[str, Any] | None:
-    """Permanently remove only a retained deletion and its unreferenced files."""
+def _purge_deleted_exchanges(notebook_id: str, exchange_id: str | None = None) -> dict[str, Any] | None:
+    """Remove confirmed deleted records together; never touch active history."""
     with connection() as conn:
         conn.execute('BEGIN IMMEDIATE')
-        row = conn.execute('SELECT images_json FROM chat_exchanges WHERE notebook_id=? AND id=? AND deleted_at IS NOT NULL',
-                           (notebook_id, exchange_id)).fetchone()
-        if row is None:
+        rows = conn.execute('SELECT id, images_json FROM chat_exchanges WHERE notebook_id=? '
+                            'AND deleted_at IS NOT NULL AND (? IS NULL OR id=?)',
+                            (notebook_id, exchange_id, exchange_id)).fetchall()
+        if not rows and exchange_id is not None:
             return None
-        candidates = {image['id'] for image in json.loads(row['images_json'])}
-        conn.execute('DELETE FROM chat_exchanges WHERE notebook_id=? AND id=?', (notebook_id, exchange_id))
+        identities = [row['id'] for row in rows]
+        candidates = {image['id'] for row in rows for image in json.loads(row['images_json'])}
+        conn.executemany('DELETE FROM chat_exchanges WHERE notebook_id=? AND id=?',
+                         [(notebook_id, identity) for identity in identities])
         retained = {image['id'] for record in conn.execute('SELECT images_json FROM chat_exchanges WHERE notebook_id=?', (notebook_id,))
                     for image in json.loads(record['images_json'])}
         removed = []
@@ -596,4 +599,12 @@ def purge_deleted_exchange(notebook_id: str, exchange_id: str) -> dict[str, Any]
             if image:
                 removed.append(dict(image))
                 conn.execute('DELETE FROM question_images WHERE notebook_id=? AND id=?', (notebook_id, identity))
-        return {'images': removed}
+        return {'images': removed, 'ids': identities}
+
+
+def purge_deleted_exchange(notebook_id: str, exchange_id: str) -> dict[str, Any] | None:
+    return _purge_deleted_exchanges(notebook_id, exchange_id)
+
+
+def purge_all_deleted_exchanges(notebook_id: str) -> dict[str, Any]:
+    return _purge_deleted_exchanges(notebook_id)  # type: ignore[return-value]

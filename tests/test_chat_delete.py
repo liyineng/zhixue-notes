@@ -178,3 +178,41 @@ class ChatDeleteTests(unittest.TestCase):
             self.assertEqual(self.client.delete(url + f'/{identity}/permanent').status_code, 404)
         self.assertIsNotNone(db.get_exchange(notebook, 'still-pending'))
         self.assertIsNotNone(db.get_exchange(notebook, 'restored-record'))
+
+    def test_clear_deleted_records_is_atomic_scoped_and_keeps_active_files(self):
+        notebook = self.notebook('清空删除记录')
+        other = self.notebook('保留其他笔记本')
+        document = self.upload(notebook, '课件.md', '保留来源正文')
+        note = self.client.post('/api/notes', json={'notebook_id':notebook,'title':'保留笔记','content':'正文'}).json()['note']
+        paths = {}
+        for identity in ('trash-only-file', 'shared-with-active', 'unused-file'):
+            path = main.QUESTION_IMAGE_DIR / f'{identity}.png'; path.write_bytes(b'local-attachment')
+            db.insert_question_image({'id':identity,'notebook_id':notebook,'name':path.name,'path':str(path),'ocr_text':'题干'})
+            paths[identity] = path
+        self.exchange(notebook, 'trash-a', [{'id':'trash-only-file'},{'id':'shared-with-active'}])
+        self.exchange(notebook, 'trash-b', [{'id':'trash-only-file'}])
+        self.exchange(notebook, 'active-chat', [{'id':'shared-with-active'}])
+        db.start_exchange('pending-chat', notebook, '正在生成的问题')
+        self.exchange(other, 'foreign-trash')
+        url = f'/api/notebooks/{notebook}/chat'
+        self.client.delete(url + '/trash-a'); self.client.delete(url + '/trash-b')
+        self.client.delete(f'/api/notebooks/{other}/chat/foreign-trash')
+        response = self.client.delete(url + '/deleted/all')
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()['purged_count'], 2)
+        self.assertEqual(response.json()['deleted_count'], 0)
+        self.assertEqual(response.json()['deleted_image_ids'], ['trash-only-file'])
+        self.assertFalse(paths['trash-only-file'].exists())
+        self.assertTrue(paths['shared-with-active'].exists())
+        self.assertTrue(paths['unused-file'].exists())
+        self.assertIsNotNone(db.get_exchange(notebook,'active-chat'))
+        self.assertIsNotNone(db.get_exchange(notebook,'pending-chat'))
+        self.assertIsNotNone(db.get_document(document))
+        self.assertIsNotNone(db.get_note(note['id']))
+        self.assertEqual(len(db.list_deleted_exchanges(other)), 1)
+        self.assertEqual(self.client.get(url + '/deleted').json()['exchanges'], [])
+        self.assertEqual(self.client.post(url + '/undo').status_code, 404)
+        self.assertEqual(self.client.post(url + '/trash-a/restore').status_code, 404)
+        db.init_db()
+        self.assertEqual(self.client.delete(url + '/deleted/all').json()['purged_count'], 0)
+        self.assertEqual(self.client.delete('/api/notebooks/missing-notebook/chat/deleted/all').status_code, 404)
