@@ -8,7 +8,7 @@ const modules=path.join(os.homedir(),'.cache/codex-runtimes/codex-primary-runtim
 const {chromium}=await import(pathToFileURL(path.join(modules,'playwright/index.mjs')).href);
 const browser=await chromium.launch({headless:true});
 const page=await browser.newPage({viewport:{width:1440,height:1000}});
-const errors=[],restores=[];page.on('pageerror',e=>errors.push(e.message));
+const errors=[],restores=[],purges=[];page.on('pageerror',e=>errors.push(e.message));
 const citation={index:1,document_id:'course',document_name:'课程.md',document_kind:'md',page:4,text:'原始依据',lines:[]};
 const active={id:'active',question:'当前保留的问题',images:[],reply_to:{},status:'complete',created_at:'2026-10-18T00:00:00Z',result:{answer:'原有回答 [1]',citations:[citation],mode:'model'}};
 const file={id:'file',name:'习题.pdf',kind:'document',url:'/api/question-images/file/file'};
@@ -27,6 +27,12 @@ await page.route('**/api/**',async route=>{
  if(p==='/api/notes')return fulfill({notes:[]});
  if(p==='/api/notebooks/default/chat')return fulfill({exchanges:history,deleted_count:deleted.length});
  if(p==='/api/notebooks/default/chat/deleted')return fulfill({exchanges:deleted,retention_limit:5});
+ if(p.endsWith('/permanent')){
+  assert.equal(req.method(),'DELETE');
+  const id=p.split('/').at(-2);purges.push(id);
+  assert(deleted.some(item=>item.id===id));deleted=deleted.filter(item=>item.id!==id);
+  return fulfill({deleted:true,permanent:true,chat_id:id,deleted_count:deleted.length,deleted_image_ids:[]});
+ }
  if(p.endsWith('/restore')){
   const id=p.split('/').at(-2);restores.push(id);
   if(id==='older')await gate;
@@ -77,12 +83,20 @@ try{
   assert(await page.locator('#deleted-chat-dialog').evaluate(el=>el.scrollWidth<=el.clientWidth+1));
   await page.screenshot({path:`artifacts/deleted-chat-panel/mobile-${width}.png`});
  }
- await page.locator('[data-deleted-id="recent"]').getByRole('button',{name:'恢复这条',exact:true}).click();
+ page.once('dialog',dialog=>dialog.dismiss());
+ await page.locator('[data-deleted-id="recent"]').getByRole('button',{name:'永久删除',exact:true}).click();
+ assert.deepEqual(purges,[],'cancelled confirmation must send no delete');
+ assert.equal(await page.locator('.deleted-chat-card').count(),1);
+ page.once('dialog',dialog=>{assert.match(dialog.message(),/无法恢复/);dialog.accept();});
+ await page.locator('[data-deleted-id="recent"]').getByRole('button',{name:'永久删除',exact:true}).click();
  await page.locator('.deleted-chat-empty').waitFor();
+ assert.deepEqual(purges,['recent']);
+ assert.deepEqual(restores,['older']);
+ assert.equal(history.length,2,'permanent deletion must not restore the record');
  assert.match(await page.locator('#deleted-chat-status').textContent(),/0 \/ 5/);
  await page.keyboard.press('Escape');
  assert(await page.locator('#undo-chat-delete').isDisabled());
  assert(await page.locator('#manage-deleted-chat').isEnabled());
  assert.deepEqual(errors,[]);
- console.log('PASS: deleted-record preview, source/attachment snapshots, selective restore, duplicate guard, preserved drafts/DOM, reload, empty state and mobile.');
+ console.log('PASS: deleted-record preview, source/attachment snapshots, selective restore, duplicate guard, preserved drafts/DOM, permanent deletion/confirmation, reload, empty state and mobile.');
 }finally{await browser.close();}

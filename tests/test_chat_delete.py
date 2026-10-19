@@ -130,3 +130,51 @@ class ChatDeleteTests(unittest.TestCase):
         self.assertEqual(self.client.post(url + '/record-0/restore').status_code, 404)
         self.client.delete(url)
         self.assertEqual(self.client.get(url + '/deleted').json()['exchanges'], [])
+
+    def test_permanent_delete_preserves_shared_attachments_and_other_records(self):
+        notebook = self.notebook('永久删除')
+        other = self.notebook('其他笔记本')
+        images = {}
+        for identity in ('unique-purge', 'shared-active', 'shared-deleted', 'unrelated-file'):
+            path = main.QUESTION_IMAGE_DIR / f'{identity}.png'
+            path.write_bytes(b'local-file')
+            db.insert_question_image({'id':identity, 'notebook_id':notebook, 'name':path.name,
+                                      'path':str(path), 'ocr_text':'题目'})
+            images[identity] = path
+        self.exchange(notebook, 'purge-target', [{'id':key} for key in ('unique-purge', 'shared-active', 'shared-deleted')])
+        self.exchange(notebook, 'keep-active', [{'id':'shared-active'}])
+        self.exchange(notebook, 'keep-deleted', [{'id':'shared-deleted'}])
+        url = f'/api/notebooks/{notebook}/chat'
+        self.client.delete(url + '/purge-target')
+        self.client.delete(url + '/keep-deleted')
+        self.assertEqual(self.client.delete(f'/api/notebooks/{other}/chat/purge-target/permanent').status_code, 404)
+        self.assertEqual(self.client.delete(url + '/keep-active/permanent').status_code, 404)
+        response = self.client.delete(url + '/purge-target/permanent')
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertTrue(response.json()['permanent'])
+        self.assertEqual(response.json()['deleted_image_ids'], ['unique-purge'])
+        self.assertEqual(response.json()['deleted_count'], 1)
+        self.assertFalse(images['unique-purge'].exists())
+        self.assertIsNone(db.get_question_image('unique-purge'))
+        for identity in ('shared-active', 'shared-deleted', 'unrelated-file'):
+            self.assertTrue(images[identity].exists())
+            self.assertIsNotNone(db.get_question_image(identity))
+        self.assertEqual([item['id'] for item in self.client.get(url + '/deleted').json()['exchanges']], ['keep-deleted'])
+        self.assertEqual(self.client.post(url + '/purge-target/restore').status_code, 404)
+        self.assertEqual(self.client.delete(url + '/purge-target/permanent').status_code, 404)
+        db.init_db()
+        self.assertEqual(self.client.post(url + '/undo').json()['chat_id'], 'keep-deleted')
+        self.assertIsNotNone(db.get_exchange(notebook, 'keep-active'))
+        self.assertFalse(db.exchange_exists('purge-target'))
+
+    def test_permanent_delete_rejects_pending_active_and_restored_records(self):
+        notebook = self.notebook('拒绝误删')
+        url = f'/api/notebooks/{notebook}/chat'
+        db.start_exchange('still-pending', notebook, '生成中')
+        self.exchange(notebook, 'restored-record')
+        self.client.delete(url + '/restored-record')
+        self.client.post(url + '/restored-record/restore')
+        for identity in ('still-pending', 'restored-record', 'missing'):
+            self.assertEqual(self.client.delete(url + f'/{identity}/permanent').status_code, 404)
+        self.assertIsNotNone(db.get_exchange(notebook, 'still-pending'))
+        self.assertIsNotNone(db.get_exchange(notebook, 'restored-record'))

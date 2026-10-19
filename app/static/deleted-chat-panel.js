@@ -1,7 +1,7 @@
 import {renderAnswerHtml} from '/static/answer-format.js';
 import renderMathInElement from '/static/vendor/katex/contrib/auto-render.mjs';
 
-export function initializeDeletedChatPanel({api, notebookId, isBusy, onRestored, toast}) {
+export function initializeDeletedChatPanel({api, notebookId, isBusy, onRestored, onPurged, toast}) {
   const dialog = document.getElementById('deleted-chat-dialog');
   const list = document.getElementById('deleted-chat-list');
   const status = document.getElementById('deleted-chat-status');
@@ -44,6 +44,22 @@ export function initializeDeletedChatPanel({api, notebookId, isBusy, onRestored,
     }
     return body;
   }
+  async function changeRecord(record, permanent = false) {
+    if (!valid() || working) return;
+    if (isBusy()) return toast('请等待当前操作完成。');
+    if (permanent && !window.confirm(`永久删除“${(record.question || '附件提问').slice(0, 100)}”？这条对话将无法恢复，仅被这条记录使用的附件也会清理。`)) return;
+    const operationScope = scope, operationRevision = revision;
+    working = true; render();
+    try {
+      const data = await api(`${base()}/${encodeURIComponent(record.id)}/${permanent ? 'permanent' : 'restore'}`, {method:permanent ? 'DELETE' : 'POST'});
+      if (permanent) await onPurged(data, record, operationScope);
+      else await onRestored(data, record, operationScope);
+      if (!valid() || scope !== operationScope) return;
+      records = records.filter(item => item.id !== record.id);
+      toast(permanent ? '这条对话已永久删除。' : record.result?.quiz ? '测验已恢复到“应用”。' : '对话及附件已恢复，原有内容和顺序保留。');
+    } catch (error) { toast(error.message, true); }
+    finally { working = false; if (valid()) { if (operationRevision !== revision) load(); else render(); } }
+  }
   function render() {
     const opened = new Set([...list.querySelectorAll('article')].filter(card => card.querySelector('details')?.open).map(card => card.dataset.deletedId));
     list.replaceChildren(); status.textContent = `可恢复 ${records.length} / 5 条 · 当前笔记本`;
@@ -55,21 +71,11 @@ export function initializeDeletedChatPanel({api, notebookId, isBusy, onRestored,
       const header = document.createElement('div'); header.className = 'deleted-chat-card-heading';
       const heading = document.createElement('h3'); heading.textContent = record.question || '附件提问'; heading.title = record.question;
       const restore = document.createElement('button'); restore.className = 'button ghost'; restore.type = 'button'; restore.textContent = '恢复这条'; restore.disabled = working || isBusy();
-      restore.addEventListener('click', async () => {
-        if (!valid() || working) return;
-        if (isBusy()) return toast('请等待当前操作完成。');
-        const operationScope = scope, operationRevision = revision;
-        working = true; render();
-        try {
-          const data = await api(`${base()}/${encodeURIComponent(record.id)}/restore`, {method:'POST'});
-          await onRestored(data, record, operationScope);
-          if (!valid() || scope !== operationScope) return;
-          records = records.filter(item => item.id !== record.id);
-          if (valid()) toast(record.result?.quiz ? '测验已恢复到“应用”。' : '对话及附件已恢复，原有内容和顺序保留。');
-        } catch (error) { toast(error.message, true); }
-        finally { working = false; if (valid()) { if (operationRevision !== revision) load(); else render(); } }
-      });
-      header.append(heading, restore);
+      restore.addEventListener('click', () => changeRecord(record));
+      const remove = document.createElement('button'); remove.className = 'button ghost deleted-chat-permanent'; remove.type = 'button'; remove.textContent = '永久删除'; remove.disabled = working || isBusy();
+      remove.addEventListener('click', () => changeRecord(record, true));
+      const actions = document.createElement('div'); actions.className = 'deleted-chat-card-actions'; actions.append(restore, remove);
+      header.append(heading, actions);
       const meta = document.createElement('p'); meta.className = 'deleted-chat-meta';
       const type = record.result?.quiz ? '测验' : record.result?.cancelled ? '已取消的问答' : record.status === 'error' ? '失败的问答' : '问答';
       meta.textContent = `${type} · 删除于 ${date(record.deleted_at)}${record.images?.length ? ` · ${record.images.length} 个附件` : ''}`;
@@ -96,7 +102,7 @@ export function initializeDeletedChatPanel({api, notebookId, isBusy, onRestored,
     dialog.showModal();
     if (working) {
       scope = notebookId(); records = []; list.replaceChildren();
-      status.textContent = '正在完成恢复操作，请稍候…';
+      status.textContent = '正在完成操作，请稍候…';
     } else load();
   });
   document.getElementById('refresh-deleted-chat').addEventListener('click', load);

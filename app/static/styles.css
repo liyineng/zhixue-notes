@@ -1399,3 +1399,8 @@ body.quiz-page { overflow: auto; height: auto; min-height: 100dvh; background: v
 .deleted-citation-number { color: var(--teal); }
 .deleted-chat-preview details p { white-space: pre-wrap; }
 @media (max-width: 600px) { .deleted-chat-dialog { padding: 16px; } .deleted-chat-card { padding: 12px; } .deleted-chat-card-heading .button { min-height: 40px; } }
+
+.deleted-chat-card-actions { display: flex; gap: 6px; flex-shrink: 0; }
+.deleted-chat-card-actions .deleted-chat-permanent { color: #b45353; }
+.deleted-chat-card-actions .deleted-chat-permanent:hover { background: #fff1f1; border-color: #ebc0c0; }
+@media (max-width: 600px) { .deleted-chat-card-actions { flex-direction: column; } }

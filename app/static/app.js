@@ -1859,6 +1859,14 @@ ui["clear-chat"].addEventListener("click", async () => {
 
 initializeDeletedChatPanel({
   api, notebookId: () => state.notebookId, isBusy: () => state.busy, toast: showToast,
+  onPurged: async (result, record, notebookId) => {
+    if (state.notebookId !== notebookId) return;
+    state.deletedCount = result.deleted_count; updateUndoButton();
+    const removed = new Set(result.deleted_image_ids || []);
+    if (state.draftImages.some(image => removed.has(image.id))) {
+      state.draftImages = state.draftImages.filter(image => !removed.has(image.id)); renderDraftImages();
+    }
+  },
   onRestored: async (result, record, notebookId) => {
     if (state.notebookId !== notebookId) return;
     await loadChat(true);

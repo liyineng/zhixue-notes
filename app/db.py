@@ -575,3 +575,25 @@ def remove_unused_attachment(notebook_id: str, attachment_id: str) -> str | None
                 raise ValueError('附件仍被对话或最近五条删除记录引用，暂不能永久删除。')
         conn.execute('DELETE FROM question_images WHERE id=? AND notebook_id=?', (attachment_id, notebook_id))
         return row['path']
+
+
+def purge_deleted_exchange(notebook_id: str, exchange_id: str) -> dict[str, Any] | None:
+    """Permanently remove only a retained deletion and its unreferenced files."""
+    with connection() as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        row = conn.execute('SELECT images_json FROM chat_exchanges WHERE notebook_id=? AND id=? AND deleted_at IS NOT NULL',
+                           (notebook_id, exchange_id)).fetchone()
+        if row is None:
+            return None
+        candidates = {image['id'] for image in json.loads(row['images_json'])}
+        conn.execute('DELETE FROM chat_exchanges WHERE notebook_id=? AND id=?', (notebook_id, exchange_id))
+        retained = {image['id'] for record in conn.execute('SELECT images_json FROM chat_exchanges WHERE notebook_id=?', (notebook_id,))
+                    for image in json.loads(record['images_json'])}
+        removed = []
+        for identity in candidates - retained:
+            image = conn.execute('SELECT id, path FROM question_images WHERE notebook_id=? AND id=?',
+                                 (notebook_id, identity)).fetchone()
+            if image:
+                removed.append(dict(image))
+                conn.execute('DELETE FROM question_images WHERE notebook_id=? AND id=?', (notebook_id, identity))
+        return {'images': removed}
