@@ -1338,3 +1338,7 @@ body.quiz-page { overflow: auto; height: auto; min-height: 100dvh; background: v
 .composer { grid-template-columns: minmax(0, 1fr) 64px; }
 .composer-actions .icon-button, .composer-actions .cancel-generation, .composer-actions .send-button { width: 64px; }
 .composer-actions #attach-question-image { font-size: 12px; white-space: nowrap; }
+.draft-document { width: min(240px, 100%); padding: 12px 28px 12px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); }
+.draft-document > a { display: block; overflow-wrap: anywhere; color: var(--navy); font-size: 12px; line-height: 1.6; text-decoration: none; }
+.draft-document > span { display: none; }
+.message-attachment { max-width: 100%; padding: 10px 14px; border: 1px solid var(--line); border-radius: 8px; color: var(--navy); font-size: 13px; overflow-wrap: anywhere; text-decoration: none; background: var(--paper); }

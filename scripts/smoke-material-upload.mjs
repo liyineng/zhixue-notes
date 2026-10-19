@@ -8,7 +8,8 @@ const modules = path.join(os.homedir(), '.cache/codex-runtimes/codex-primary-run
 const { chromium } = await import(pathToFileURL(path.join(modules, 'playwright/index.mjs')).href);
 const browser = await chromium.launch({ headless: true });
 const page = await browser.newPage({ viewport: { width: 1440, height: 960 } });
-const errors = [], uploads = [];
+const errors = [], uploads = [], attachments = [];
+let history = [];
 let docs = [{ id: 'old', name: '原有笔记.md', kind: 'md', page_count: 1, chunk_count: 1, size_bytes: 100 }], asked;
 let releaseUpload;
 const uploadGate = new Promise(resolve => { releaseUpload = resolve; });
@@ -21,20 +22,29 @@ await page.route('**/api/**', async route => {
   if (p === '/api/sync') return fulfill({ enabled: false, available: false, conflicts: [] });
   if (p === '/api/notebooks') return fulfill({ notebooks: [{ id: 'default', name: '资料上传验收', document_count: docs.length }] });
   if (p === '/api/notes') return fulfill({ notes: [] });
-  if (p === '/api/notebooks/default/chat') return fulfill({ exchanges: [], deleted_count: 0 });
+  if (p === '/api/notebooks/default/chat') return fulfill({ exchanges: history, deleted_count: 0 });
   if (p === '/api/documents' && req.method() === 'GET') return fulfill({ documents: docs });
-  if (req.method() === 'POST' && ['/api/documents', '/api/question-images'].includes(p)) {
+  if (req.method() === 'POST' && ['/api/documents', '/api/question-images', '/api/question-attachments'].includes(p)) {
     assert.equal(url.searchParams.get('notebook_id'), 'default');
     const name = req.postDataBuffer().toString('utf8').match(/filename="([^"]+)"/)[1];
     uploads.push({ p, name });
     if (name === '课程.pdf') await uploadGate;
     if (name === '损坏.pdf') return route.fulfill({ status: 400, json: { detail: '测试文件解析失败' } });
-    if (p === '/api/question-images') return fulfill({ image: { id: 'image-1', name, url: '/api/question-images/image-1/file', ocr_text: '题目内容' } });
+    if (p !== '/api/documents') {
+      const id = p === '/api/question-images' ? 'image-1' : `attachment-${attachments.length}`;
+      const image = { id, name, kind: p === '/api/question-images' ? 'image' : 'document', url: `/api/question-images/${id}/file`, ocr_text: '题目内容' };
+      attachments.push(image); return fulfill({ image });
+    }
     const doc = { id: `doc-${docs.length}`, name, kind: name.split('.').at(-1).toLowerCase(), page_count: 1, chunk_count: 1, size_bytes: 100 };
     docs.push(doc); return fulfill({ document: doc });
   }
   if (p === '/api/question-images/image-1/file') return route.fulfill({ contentType: 'image/png', body: pixel });
-  if (p === '/api/ask') { asked = req.postDataJSON(); return fulfill({ chat_id: asked.request_id, answer: '资料与图片联合问答成功。', citations: [], mode: 'model', source_mode: 'knowledge_base' }); }
+  if (p === '/api/ask') {
+    asked = req.postDataJSON();
+    const result = { chat_id: asked.request_id, answer: '资料与图片联合问答成功。', citations: [], mode: 'model', source_mode: 'knowledge_base' };
+    history = [{ id: asked.request_id, question: asked.question, images: attachments, reply_to: {}, status: 'complete', result, created_at: '2026-01-01' }];
+    return fulfill(result);
+  }
   errors.push(`Unexpected API ${req.method()} ${p}`);
   return route.fulfill({ status: 404, json: { detail: 'Unexpected mocked API' } });
 });
@@ -52,17 +62,17 @@ try {
   await page.waitForFunction(() => document.querySelector('#send-button').disabled);
   assert(await page.locator('#notebook-select').isDisabled());
   releaseUpload();
-  await page.waitForFunction(() => !document.querySelector('#send-button').disabled && document.querySelectorAll('.document-item').length === 6);
-  assert.equal(await page.locator('.draft-image').count(), 1);
+  await page.waitForFunction(() => !document.querySelector('#send-button').disabled && document.querySelectorAll('.draft-image').length === 6);
+  assert.equal(await page.locator('.draft-image').count(), 6);
   assert.equal(await page.locator('[data-document-id="old"] input').isChecked(), false);
-  assert.equal(await page.locator('.document-item input:checked').count(), 5);
+  assert.equal(await page.locator('.document-item input:checked').count(), 0);
   assert.equal(uploads.filter(x => x.p === '/api/question-images').length, 1);
-  assert.equal(uploads.filter(x => x.p === '/api/documents').length, 5);
-  // A later failed document must not hide an earlier successful import or remove the image draft.
+  assert.equal(uploads.filter(x => x.p === '/api/documents').length, 0);
+  // Attachments stay outside sources, including partial failure, drop and paste.
   await page.locator('#question-image-input').setInputFiles([file('先成功.txt'), file('损坏.pdf')]);
   await page.locator('#toast').filter({ hasText: '测试文件解析失败' }).waitFor();
-  assert.equal(await page.locator('.document-item').count(), 7);
-  assert.equal(await page.locator('.draft-image').count(), 1);
+  assert.equal(await page.locator('.document-item').count(), 1);
+  assert.equal(await page.locator('.draft-image').count(), 7);
   assert.equal(await page.locator('#send-button').isDisabled(), false);
   const before = uploads.length;
   await page.locator('#question-image-input').setInputFiles([file('不支持.zip')]);
@@ -78,7 +88,7 @@ try {
         ? new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: data })
         : new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData: data }));
     }, { eventType, name });
-    await page.locator('.document-name', { hasText: name }).waitFor();
+    await page.locator('.draft-document a', { hasText: name }).waitFor();
     await page.waitForFunction(() => !document.querySelector('#send-button').disabled);
   }
   await page.locator('#file-input').setInputFiles(file('侧栏资料.txt'));
@@ -98,9 +108,14 @@ try {
   await page.locator('#question-input').press('Enter');
   await page.locator('.message.assistant').filter({ hasText: '联合问答成功' }).waitFor();
   assert.deepEqual(asked.document_ids, docs.filter(d => d.id !== 'old').map(d => d.id));
-  assert.deepEqual(asked.image_ids, ['image-1']);
+  assert.deepEqual(asked.image_ids, attachments.map(item => item.id));
   assert.equal(asked.notebook_id, 'default');
+  await page.reload({ waitUntil: 'networkidle' });
+  await page.locator('.message.assistant').filter({ hasText: '联合问答成功' }).waitFor();
+  assert.equal(await page.locator('.message.user .message-attachment').count(), 8);
+  assert.equal(await page.locator('.message.user img').count(), 1);
+  assert.equal(await page.locator('.document-item').count(), 2);
   assert.deepEqual(errors, []);
-  console.log('Mixed material upload, picker/sidebar/drop/paste, notebook scope, retained selections, partial failure, validation, mobile layout and image question passed.');
+  console.log('Mixed material upload, picker/sidebar/drop/paste, notebook scope, no source pollution, retained selections, partial failure, history restoration and mobile layout passed.');
 } catch (error) { await fs.mkdir('artifacts/material-upload', { recursive: true }); await page.screenshot({ path: 'artifacts/material-upload/failure.png' }); throw error; }
 finally { await browser.close(); }

@@ -365,7 +365,7 @@ async function loadDocuments(selectAll = false) {
   dom.documentList.hidden = false;
 }
 
-async function uploadFiles(files) {
+async function uploadFiles(files, asAttachment = false) {
   const accepted = [...files];
   if (!accepted.length) return;
   if (state.busy) return showToast("请等待当前操作完成。");
@@ -376,11 +376,13 @@ async function uploadFiles(files) {
   const invalid = accepted.find(file => !isImage(file) && !documentSuffixes.has(file.name.split('.').pop().toLowerCase()));
   const clearInputs = () => { dom.fileInput.value = ''; ui['question-image-input'].value = ''; };
   let validationError;
-  if (invalid) validationError = `不支持 ${invalid.name}，请选择 PDF、PPTX、DOCX、Markdown、TXT 或 PNG、JPG、WebP 图片。`;
-  else if (state.draftImages.length + images.length > 3) validationError = '每次最多附带 3 张题目图片，文档数量不受此限制。';
+  if (!asAttachment && images.length) validationError = '图片请从提问框的“上传资料”添加为问题附件。';
+  else if (invalid) validationError = `不支持 ${invalid.name}，请选择 PDF、PPTX、DOCX、Markdown、TXT 或 PNG、JPG、WebP 图片。`;
+  else if (state.draftImages.filter(item => item.kind !== 'document').length + images.length > 3) validationError = '每次最多附带 3 张题目图片。';
+  else if (asAttachment && state.draftImages.length + accepted.length > 10) validationError = '每次最多上传 10 个问题附件。';
   else if (images.some(file => file.size > 10 * 1024 * 1024)) validationError = '每张题目图片最多 10 MB。';
   if (validationError) { clearInputs(); return showToast(validationError, true); }
-  if (images.length && state.imageTextEdited && !window.confirm('添加图片会重置校对文字，继续？')) { clearInputs(); return; }
+  if ((asAttachment || images.length) && state.imageTextEdited && !window.confirm('添加附件会重置校对文字，继续？')) { clearInputs(); return; }
   let imported = 0, attached = 0, failure = null;
   const unreadPages = [];
   setBusy(true);
@@ -388,9 +390,10 @@ async function uploadFiles(files) {
     for (const file of accepted) {
       const body = new FormData();
       body.append("file", file);
-      if (isImage(file)) {
-        showToast(`正在识别题目：${file.name}`);
-        const data = await api(`/api/question-images?notebook_id=${encodeURIComponent(state.notebookId)}`, { method: 'POST', body });
+      if (isImage(file) || asAttachment) {
+        showToast(`正在读取问题附件：${file.name}`);
+        const endpoint = isImage(file) ? 'question-images' : 'question-attachments';
+        const data = await api(`/api/${endpoint}?notebook_id=${encodeURIComponent(state.notebookId)}`, { method: 'POST', body });
         state.draftImages.push(data.image);
         attached++;
       } else {
@@ -412,7 +415,7 @@ async function uploadFiles(files) {
     setBusy(false);
     clearInputs();
   }
-  const completed = [imported && `已导入 ${imported} 份资料并选为来源`, attached && `已添加 ${attached} 张题目图片，可发送或校对文字`].filter(Boolean).join('；');
+  const completed = [imported && `已导入 ${imported} 份资料并选为来源`, attached && `已添加 ${attached} 个问题附件，随本次问题发送`].filter(Boolean).join('；');
   showToast([completed, ...unreadPages, failure].filter(Boolean).join('；'), Boolean(failure || unreadPages.length));
 }
 
@@ -726,10 +729,15 @@ function addMessage(role, text, options = {}) {
         link.href = item.url;
         link.target = "_blank";
         link.rel = "noopener";
-        const image = document.createElement("img");
-        image.src = item.url;
-        image.alt = item.name;
-        link.append(image);
+        if (item.kind === 'document') {
+          link.className = 'message-attachment';
+          link.textContent = item.name;
+        } else {
+          const image = document.createElement('img');
+          image.src = item.url;
+          image.alt = item.name;
+          link.append(image);
+        }
         images.append(link);
       }
       article.append(images);
@@ -1035,7 +1043,8 @@ function addRecognizedText(article, text, mode) {
   const details = document.createElement("details");
   details.className = "image-recognition";
   const summary = document.createElement("summary");
-  summary.textContent = `识别到的题目（${mode === "vision" ? "视觉模型" : mode === "manual" ? "已校对" : "本机 OCR"}）`;
+  const label = { vision: '视觉模型', manual: '已校对', document: '文档提取', mixed: '文档与图片', ocr: '本机 OCR' }[mode] || '本机 OCR';
+  summary.textContent = `识别到的题目（${label}）`;
   const body = document.createElement("div");
   body.textContent = text;
   details.append(summary, body);
@@ -1050,19 +1059,22 @@ function renderDraftImages() {
   for (const image of state.draftImages) {
     const item = document.createElement("div");
     item.className = "draft-image";
-    const preview = document.createElement("img");
-    preview.src = image.url;
-    preview.alt = image.name;
+    const preview = document.createElement(image.kind === 'document' ? 'a' : 'img');
+    if (image.kind === 'document') {
+      item.classList.add('draft-document');
+      preview.href = image.url; preview.target = '_blank'; preview.rel = 'noopener';
+      preview.textContent = image.name; preview.title = image.name;
+    } else { preview.src = image.url; preview.alt = image.name; }
     const name = document.createElement("span");
     name.textContent = image.name;
     const remove = document.createElement("button");
     remove.type = "button";
     remove.className = "draft-remove";
     remove.textContent = "×";
-    remove.setAttribute("aria-label", `移除图片 ${image.name}`);
+    remove.setAttribute("aria-label", `移除附件 ${image.name}`);
     remove.addEventListener("click", async () => {
       if (state.busy) return;
-      if (state.imageTextEdited && !window.confirm("移除图片会重置校对文字，继续？")) return;
+      if (state.imageTextEdited && !window.confirm("移除附件会重置校对文字，继续？")) return;
       try {
         await api(`/api/question-images/${image.id}`, { method: "DELETE" });
         state.draftImages = state.draftImages.filter((item) => item.id !== image.id);
@@ -1074,22 +1086,22 @@ function renderDraftImages() {
   }
 }
 
-async function attachQuestionImages(files) {
-  return uploadFiles(files);
+async function attachQuestionFiles(files) {
+  return uploadFiles(files, true);
 }
 
 ui["attach-question-image"].addEventListener("click", () => ui["question-image-input"].click());
-ui["question-image-input"].addEventListener("change", (event) => attachQuestionImages([...event.target.files]));
+ui["question-image-input"].addEventListener("change", (event) => attachQuestionFiles([...event.target.files]));
 ui["question-image-text"].addEventListener("input", () => { state.imageTextEdited = true; });
 dom.questionInput.addEventListener("paste", (event) => {
   const files = [...(event.clipboardData?.files || [])];
-  if (files.length) { event.preventDefault(); uploadFiles(files); }
+  if (files.length) { event.preventDefault(); uploadFiles(files, true); }
 });
 dom.askForm.addEventListener("dragover", (event) => event.preventDefault());
 dom.askForm.addEventListener("drop", (event) => {
   event.preventDefault();
   const files = [...(event.dataTransfer?.files || [])];
-  if (files.length) uploadFiles(files);
+  if (files.length) uploadFiles(files, true);
 });
 
 async function askQuestion(question) {
@@ -1099,7 +1111,7 @@ async function askQuestion(question) {
   if (state.busy) return showToast("请等待当前回答完成。");
   window.__lastQuestionTerms = extractSearchTerms(text);
   const replyTo = state.replyTo;
-  const userId = addMessage("user", text || "请解答图片中的题目，并结合选中的课程资料。", { images, replyTo });
+  const userId = addMessage("user", text || "请解答附件中的题目，并结合选中的课程资料。", { images, replyTo });
   const assistantId = addMessage("assistant", "", { loading: true });
   const job = startGeneration(text, assistantId);
   setBusy(true);

@@ -57,6 +57,19 @@ async def read_question(images: list[dict[str, Any]], settings: dict[str, Any],
         if not override.strip():
             raise ValueError("请填写校对后的题目文字，或恢复自动识别。")
         return override.strip(), "manual"
+    documents = [item for item in images if Path(item['path']).suffix.lower() != '.png']
+    if documents:
+        pictures = [item for item in images if item not in documents]
+        parts = [f"附件《{item['name']}》：\n{item['ocr_text']}" for item in documents]
+        mode = 'document'
+        if pictures:
+            text, _ = await read_question(pictures, settings, instruction=instruction)
+            parts.append('题目图片：\n' + text)
+            mode = 'mixed'
+        text = '\n\n'.join(parts)
+        if len(text) > 20000:
+            raise ValueError('本次附件文字合计超过 20000 字，请减少附件或拆分文件后提问。')
+        return text, mode
     if settings.get("vision_model"):
         from .llm import chat_completion
 

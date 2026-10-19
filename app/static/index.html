@@ -82,11 +82,11 @@
           </div>
         </div>
 
-        <input id="file-input" type="file" multiple hidden accept=".pdf,.md,.markdown,.txt,.docx,.pptx,.png,.jpg,.jpeg,.webp" />
+        <input id="file-input" type="file" multiple hidden accept=".pdf,.md,.markdown,.txt,.docx,.pptx" />
         <div class="sidebar-toolbar">
           <button id="upload-button" class="button primary" type="button">
             <svg class="icon"><use href="#i-upload"></use></svg>
-            上传资料
+            添加来源
           </button>
           <button id="settings-button" class="icon-button" type="button" title="模型设置" aria-label="模型设置">
             <svg class="icon"><use href="#i-settings"></use></svg>
@@ -97,7 +97,7 @@
 
         <button id="dropzone" class="dropzone" type="button">
           <svg class="icon"><use href="#i-upload"></use></svg>
-          <span>拖拽 PDF、课件、文档或图片</span>
+          <span>拖拽 PDF、课件或文档添加为来源</span>
         </button>
 
         <div class="library-tabs" role="tablist" aria-label="笔记本内容">
@@ -168,8 +168,8 @@
             <input id="question-image-input" type="file" accept=".pdf,.pptx,.docx,.md,.markdown,.txt,.png,.jpg,.jpeg,.webp" multiple hidden />
             <div id="question-image-draft" class="question-image-draft" hidden>
               <div id="question-image-list" class="question-image-list"></div>
-              <details><summary>题目文字（可校对）</summary><textarea id="question-image-text" rows="4" maxlength="20000" placeholder="OCR 未识别清楚时，可在这里填写或更正题目。"></textarea></details>
-              <small>文字题可直接识别；公式、图表建议校对文字或配置图片识别模型。</small>
+              <details><summary>附件文字（可校对）</summary><textarea id="question-image-text" rows="4" maxlength="20000" placeholder="可在这里填写或更正附件中的题目文字。"></textarea></details>
+              <small>附件仅随本次问题发送，不加入来源库。公式、图表请校对文字或配置图片识别模型。</small>
             </div>
             <textarea
               id="question-input"
@@ -178,7 +178,7 @@
               maxlength="4000"
             ></textarea>
             <div class="composer-actions">
-            <button id="attach-question-image" class="icon-button" type="button" aria-label="上传资料" title="支持 PDF、PPTX、DOCX、Markdown、TXT 和 PNG、JPG、WebP 图片，也可拖入文件或粘贴截图。文档加入当前笔记本，图片随问题发送。">上传资料</button>
+            <button id="attach-question-image" class="icon-button" type="button" aria-label="上传资料" title="上传本次问题的附件：PDF、PPTX、DOCX、Markdown、TXT、PNG、JPG、WebP。不会加入来源库；每次最多 10 个附件，其中图片最多 3 张。">上传资料</button>
             <button id="send-button" class="send-button" type="submit" aria-label="发送问题">
               <svg class="icon"><use href="#i-send"></use></svg>
             </button>

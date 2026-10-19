@@ -127,7 +127,7 @@ class AskRequest(BaseModel):
     request_id: str | None = Field(default=None, max_length=100, pattern=r'^[a-zA-Z0-9_-]+$')
     reply_to_id: str | None = Field(default=None, max_length=100)
     question: str = Field(default="", max_length=4000)
-    image_ids: list[str] = Field(default_factory=list, max_length=3)
+    image_ids: list[str] = Field(default_factory=list, max_length=10)
     image_text: str | None = Field(default=None, max_length=20000)
     document_ids: list[str] | None = None
     notebook_id: str | None = None
@@ -374,6 +374,7 @@ def delete_notebook(notebook_id: str) -> dict[str, bool]:
 
 def _public_image(image: dict[str, Any]) -> dict[str, Any]:
     return {"id": image["id"], "name": image["name"], "ocr_text": image["ocr_text"],
+            "kind": 'image' if Path(image['path']).suffix.lower() == '.png' else 'document',
             "url": f"/api/question-images/{image['id']}/file"}
 
 
@@ -402,12 +403,78 @@ async def upload_question_image(file: UploadFile = File(...), notebook_id: str =
         await file.close()
 
 
+@app.post('/api/question-attachments', status_code=201)
+async def upload_question_document(file: UploadFile = File(...), notebook_id: str = 'default') -> dict[str, Any]:
+    _notebook(notebook_id)
+    name = Path(file.filename or '').name
+    suffix = Path(name).suffix.lower()
+    if suffix not in SUPPORTED_SUFFIXES:
+        raise HTTPException(status_code=400, detail='附件支持 PDF、PPTX、DOCX、Markdown 和 TXT。')
+    identity = uuid4().hex
+    target = QUESTION_IMAGE_DIR / f'{identity}{suffix}'
+    try:
+        size = 0
+        with target.open('wb') as output:
+            while chunk := await file.read(1024 * 1024):
+                size += len(chunk)
+                if size > MAX_UPLOAD_BYTES:
+                    raise HTTPException(status_code=413, detail='附件超过 120 MB 限制。')
+                output.write(chunk)
+        if not size:
+            raise ValueError('附件为空。')
+        chunks, _ = await run_in_threadpool(parse_document, target, name)
+        parts = []
+        if suffix == '.pdf':
+            import tempfile
+            import pymupdf
+            with pymupdf.open(target) as pdf:
+                if len(pdf) > 30:
+                    raise ValueError('问题附件最多 30 页，请拆分题目文件；完整课件可从侧栏添加来源。')
+                for number, page in enumerate(pdf, 1):
+                    text = page.get_text().strip()
+                    if not text or page.get_images(full=True):
+                        with tempfile.TemporaryDirectory(dir=QUESTION_IMAGE_DIR) as work:
+                            image_path = Path(work) / 'page.png'
+                            scale = min(2, 2000 / max(page.rect.width, page.rect.height))
+                            await run_in_threadpool(lambda: page.get_pixmap(matrix=pymupdf.Matrix(scale, scale), alpha=False).save(image_path))
+                            ocr = await run_in_threadpool(local_ocr, image_path)
+                            try:
+                                text, _ = await read_question([{'path': str(image_path), 'ocr_text': ocr}], db.get_settings())
+                            except ValueError as exc:
+                                raise ValueError(f'附件第 {number} 页未识别成功：{exc}') from exc
+                    parts.append(f'第 {number} 页：\n{text}')
+                    if sum(map(len, parts)) > 19500:
+                        raise ValueError('附件文字超过 19500 字，请拆分文件后提问。')
+        else:
+            parts = [chunk['text'] for chunk in chunks]
+        text = '\n\n'.join(parts).strip()
+        if not text:
+            raise ValueError('附件未提取到文字，请检查文件或上传题目截图。')
+        if len(text) > 19500:
+            raise ValueError('附件文字超过 19500 字，请拆分文件后提问。')
+        # Reuse the existing notebook-scoped attachment store and history/undo
+        # lifecycle. No document/chunk rows are created in the source library.
+        attachment = {'id': identity, 'notebook_id': notebook_id, 'name': name[:200], 'path': str(target), 'ocr_text': text}
+        db.insert_question_image(attachment)
+        return {'image': _public_image(attachment)}
+    except (ValueError, RuntimeError, UnsupportedDocument) as exc:
+        target.unlink(missing_ok=True)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception:
+        target.unlink(missing_ok=True)
+        raise
+    finally:
+        await file.close()
+
+
 @app.get("/api/question-images/{image_id}/file")
 def question_image_file(image_id: str) -> FileResponse:
     image = db.get_question_image(image_id)
     if not image or not Path(image["path"]).is_file():
         raise HTTPException(status_code=404, detail="题目图片不存在。")
-    return FileResponse(image["path"], media_type="image/png")
+    if Path(image['path']).suffix.lower() == '.png':
+        return FileResponse(image['path'], media_type='image/png')
+    return FileResponse(image['path'], filename=image['name'], content_disposition_type='inline')
 
 
 @app.delete("/api/question-images/{image_id}")
@@ -689,13 +756,15 @@ async def _ask(payload: AskRequest, exchange_id: str) -> dict[str, Any]:
     top_k = payload.top_k or int(settings.get("top_k", 6))
     selected_documents = _scope(payload.notebook_id, payload.document_ids)
     if not payload.question.strip() and not payload.image_ids:
-        raise HTTPException(status_code=400, detail="请输入问题或上传题目图片。")
+        raise HTTPException(status_code=400, detail="请输入问题或上传问题附件。")
     images = []
     for image_id in dict.fromkeys(payload.image_ids):
         image = db.get_question_image(image_id)
         if not image or image["notebook_id"] != (payload.notebook_id or "default"):
-            raise HTTPException(status_code=400, detail="题目图片不在当前笔记本中或已被删除。")
+            raise HTTPException(status_code=400, detail="问题附件不在当前笔记本中或已被删除。")
         images.append(image)
+    if sum(Path(item['path']).suffix.lower() == '.png' for item in images) > 3:
+        raise HTTPException(status_code=400, detail='每次最多上传 3 张题目图片。')
     document_ids = {doc["id"] for doc in selected_documents}
     reply_to = {}
     parent = None
@@ -709,7 +778,7 @@ async def _ask(payload: AskRequest, exchange_id: str) -> dict[str, Any]:
     started = time.perf_counter()
 
     document_names = [document["name"] for document in selected_documents]
-    question = payload.question.strip() or "请解答图片中的题目，并结合选中的课程资料。"
+    question = payload.question.strip() or "请解答附件中的题目，并结合选中的课程资料。"
     previous_exchanges = [parent] if parent else db.recent_completed_exchanges(payload.notebook_id, MAX_TURNS)
     references = referenced_sources(question, previous_exchanges, document_ids)
     reference_hint = '\n'.join(f"历史引用 {c['index']} → 《{c['document_name'][:150]}》" +
@@ -719,8 +788,8 @@ async def _ask(payload: AskRequest, exchange_id: str) -> dict[str, Any]:
     db.start_exchange(exchange_id, payload.notebook_id or "default", question, [_public_image(image) for image in images], reply_to)
 
     try:
-        db.set_generation_progress(exchange_id, 'question', '识别题目图片' if images else '分析问题',
-                                   '正在读取题干与图片中的已知条件。' if images else '正在理解问题和近期对话。')
+        db.set_generation_progress(exchange_id, 'question', '读取问题附件' if images else '分析问题',
+                                   '正在读取本次附件中的题干与已知条件。' if images else '正在理解问题和近期对话。')
         image_text, image_mode = await read_question(images, settings, payload.image_text) if images else ("", "")
         effective_question = question
         if history:
@@ -734,7 +803,7 @@ async def _ask(payload: AskRequest, exchange_id: str) -> dict[str, Any]:
                                   f"\n原问题：{reply_to['question']}\n原题目图片识别内容：{reply_to['image_question_text']}\n"
                                   f"原回答：\n{previous}\n\n请针对本次追问解释；资料依据必须重新从本次提供的资料片段中取得。")
         if image_text:
-            effective_question += "\n\n题目图片的识别内容（不确定处请指出，不要猜测缺失条件）：\n" + image_text
+            effective_question += "\n\n用户本次问题的附件内容（用于理解题目，不属于课程来源，不要为附件编造来源引用；不确定处请指出）：\n" + image_text
         if reference_hint:
             effective_question += '\n\n用户所指的历史引用定位（编号不是页码，本次依据会重新读取原文）：\n' + reference_hint
         db.set_generation_progress(exchange_id, 'analysis', '规划检索', '正在判断是否需要资料，并提炼检索关键词。')
@@ -746,6 +815,10 @@ async def _ask(payload: AskRequest, exchange_id: str) -> dict[str, Any]:
         formula_inventory = is_formula_inventory(question)
         if formula_inventory:
             analysis.update(intent='summary', needs_retrieval=True)
+        if any(Path(item['path']).suffix.lower() != '.png' for item in images):
+            # A question document is supplied in full as the current question,
+            # not a request to summarize every selected course source.
+            analysis['intent'] = 'question'
         named_scope = named_question_documents(question, selected_documents) if not references else None
         if named_scope is not None and document_ids:
             if not named_scope:
