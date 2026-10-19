@@ -99,6 +99,7 @@ let noteSaving = false;
 let noteEditing = false;
 let noteSourcePlaceholder = null;
 let noteCitationGeneration = 0;
+let quizViewerPlaceholder = null;
 const savingAnswers = new Set();
 let chatPollTimer = null;
 let chatPollFailures = 0;
@@ -584,8 +585,9 @@ async function renderPdfPage(pageNumber) {
   if (generation !== state.renderGeneration) return;
 
   const baseViewport = page.getViewport({ scale: 1 });
-  const availableWidth = Math.max(noteSourcePlaceholder ? 140 : 320, dom.viewerScroll.clientWidth - (noteSourcePlaceholder ? 24 : 44));
-  const scale = Math.max(noteSourcePlaceholder ? 0.2 : 0.55, Math.min(1.9, availableWidth / baseViewport.width));
+  const comparing = noteSourcePlaceholder || document.getElementById('quiz-dialog').open;
+  const availableWidth = Math.max(comparing ? 140 : 320, dom.viewerScroll.clientWidth - (comparing ? 24 : 44));
+  const scale = Math.max(comparing ? 0.2 : 0.55, Math.min(1.9, availableWidth / baseViewport.width));
   const viewport = page.getViewport({ scale });
   const outputScale = window.devicePixelRatio || 1;
   const context = dom.canvas.getContext("2d", { alpha: false });
@@ -1226,7 +1228,7 @@ function plainSourceText(citation) {
 }
 
 function showCitation(citation, messageId, citationIndex) {
-  if (!noteSourcePlaceholder) { closeStudyDrawers(); updateStudyLayout(); }
+  if (!noteSourcePlaceholder && !document.getElementById('quiz-dialog').open) { closeStudyDrawers(); updateStudyLayout(); }
   if (!["pdf", "pptx"].includes(citation.document_kind)) resetViewer();
   state.activeCitation = Number(citationIndex);
   state.highlightMessageId = messageId;
@@ -1272,7 +1274,7 @@ function showCitation(citation, messageId, citationIndex) {
 }
 
 function setMobilePane(pane) {
-  if (pane === 'viewer' && noteSourcePlaceholder && ui['note-dialog'].open) return;
+  if (pane === 'viewer' && ((noteSourcePlaceholder && ui['note-dialog'].open) || document.getElementById('quiz-dialog').open)) return;
   document.querySelectorAll(".mobile-tab").forEach((tab) => {
     tab.classList.toggle("active", tab.dataset.pane === pane);
     tab.setAttribute('aria-pressed', String(tab.dataset.pane === pane));
@@ -1421,8 +1423,9 @@ function renderApplications() {
 
 function updateStudyLayout() {
   const quiz = Boolean(state.activeQuiz);
-  document.querySelector('.app-shell').classList.toggle('study-focus', quiz);
-  document.getElementById('study-rail').hidden = !quiz;
+  const focused = quiz && !document.getElementById('quiz-dialog').open;
+  document.querySelector('.app-shell').classList.toggle('study-focus', focused);
+  document.getElementById('study-rail').hidden = !focused;
   if (!quiz) closeStudyDrawers();
   document.querySelector('.viewer-pane').classList.toggle('study-open', quiz);
   document.getElementById('viewer-document').hidden = false;
@@ -1436,7 +1439,44 @@ function updateStudyLayout() {
   dom.workspace.dispatchEvent(new Event('panelschange'));
 }
 
+function showQuizDialog() {
+  const dialog = document.getElementById('quiz-dialog'), pane = document.querySelector('.viewer-pane');
+  if (!quizViewerPlaceholder) {
+    quizViewerPlaceholder = document.createComment('quiz-viewer-home'); pane.before(quizViewerPlaceholder); dialog.append(pane);
+  }
+  if (!dialog.open) dialog.showModal();
+}
+
+function collapseQuizSource() {
+  document.getElementById('quiz-dialog').classList.remove('has-quiz-source');
+  document.getElementById('collapse-quiz-source').hidden = true;
+  dom.workspace.dispatchEvent(new Event('panelschange'));
+}
+
+async function showQuizCitation(source, citationKey, index, isCurrent) {
+  const notebook = state.notebookId;
+  try {
+    const doc = state.documents.find(item => item.id === source.document_id);
+    let lines = source.lines || [];
+    if (doc) {
+      const {chunks} = await api(`/api/documents/${encodeURIComponent(doc.id)}/chunks`);
+      if (!isCurrent() || notebook !== state.notebookId || !document.getElementById('quiz-dialog').open) return;
+      lines = matchingSourceLines(source, chunks);
+    }
+    if (!isCurrent() || !document.getElementById('quiz-dialog').open) return;
+    document.getElementById('quiz-dialog').classList.add('has-quiz-source');
+    document.getElementById('collapse-quiz-source').hidden = false;
+    dom.workspace.dispatchEvent(new Event('panelschange'));
+    showCitation({...source, document_kind:doc ? source.document_kind || doc.kind : 'text', lines}, citationKey, index);
+    if (!doc) { state.viewerDocumentId = null; showToast('来源已移走，显示测验保存时的引用原文。'); }
+  } catch (error) { if (isCurrent()) showToast(error.message, true); }
+}
+
 function closeQuizPanel(forget = true) {
+  const dialog = document.getElementById('quiz-dialog');
+  if (dialog.open) dialog.close();
+  collapseQuizSource();
+  if (quizViewerPlaceholder) { quizViewerPlaceholder.replaceWith(document.querySelector('.viewer-pane')); quizViewerPlaceholder = null; }
   if (!forget) {
     // Switching notebooks must not clear the previous notebook's saved panel.
     state.activeQuiz = null; state.quizGeneration++;
@@ -1465,6 +1505,7 @@ async function openQuizPanel(exchange, restore = false) {
   }
   const notebook = state.notebookId, token = ++state.quizGeneration;
   state.activeQuiz = { id: exchange.id, notebook };
+  showQuizDialog();
   const content = document.createElement('div'); content.className = 'embedded-quiz-content'; content.textContent = '正在读取测验…';
   document.getElementById('quiz-panel-body').replaceChildren(content);
   document.getElementById('quiz-workspace-title').textContent = exchange.result.quiz.topic || exchange.question || '课程测验';
@@ -1495,10 +1536,9 @@ async function openQuizPanel(exchange, restore = false) {
         const source = result.citations.find(c => c.index === index);
         if (!source) return;
         state.messageCitations.set(citationKey, result.citations);
-        showCitation(source, citationKey, index);
+        showQuizCitation(source, citationKey, index, isCurrent);
       },
     });
-    if (!state.viewerDocumentId && result.citations.length) showCitation(result.citations[0], citationKey, result.citations[0].index);
   } catch (error) {
     if (!isCurrent()) return;
     content.textContent = error.message; content.classList.add('feature-error');
@@ -1507,6 +1547,8 @@ async function openQuizPanel(exchange, restore = false) {
     localStorage.removeItem(`zhixue-active-quiz:${notebook}`);
   }
 }
+document.getElementById('collapse-quiz-source').addEventListener('click', collapseQuizSource);
+document.getElementById('quiz-dialog').addEventListener('close', () => { if (!document.getElementById('quiz-dialog').open && (state.activeQuiz || quizViewerPlaceholder)) closeQuizPanel(); });
 document.getElementById('close-quiz-panel').addEventListener('click', () => { closeQuizPanel(); if (innerWidth <= 1080) setMobilePane('chat'); });
 
 function closeStudyDrawers() {
@@ -1548,7 +1590,7 @@ async function generateQuiz(configuration) {
     if (!dom.messages.querySelector('.message')) { dom.messages.innerHTML = emptyChatTemplate; selectionStatus(); }
     setLibraryTab('applications');
     if (innerWidth <= 760) setMobilePane('sources');
-    showToast('测验已保存到“应用”，点击即可进入独立做题页面。');
+    showToast('测验已保存到“应用”，点击即可打开测验窗口。');
   } catch (error) {
     if (job.cancelled || error.cancelled) setAssistantCancelled(assistantId);
     else { setAssistantError(assistantId, error); showToast(error.message, true); }
@@ -1581,6 +1623,10 @@ function chooseFeature(kind) {
 }
 document.querySelectorAll('[data-feature]').forEach(button => button.addEventListener('click', () => { chooseFeature(button.dataset.feature); saveFeatureDraft(); }));
 document.getElementById('close-features').addEventListener('click', () => featuresDialog.close());
+for (const [id, checked] of [['feature-select-all', true], ['feature-select-none', false]]) document.getElementById(id).addEventListener('click', () => {
+  document.querySelectorAll('#feature-source-list input').forEach(input => input.checked = checked);
+  document.getElementById('feature-source-list').dispatchEvent(new Event('change', {bubbles:true}));
+});
 function openFeatures() {
   if (state.busy) return;
   let draft = {};
@@ -1602,6 +1648,10 @@ function openFeatures() {
   const updateCount = () => {
     const count = list.querySelectorAll('input:checked').length;
     document.getElementById('feature-source-count').textContent = `来源 · 已选择 ${count} / ${state.documents.length} 个`;
+    document.getElementById('feature-select-all').disabled = !state.documents.length || count === state.documents.length;
+    document.getElementById('feature-select-none').disabled = count === 0;
+    const error = document.getElementById('feature-error');
+    if (count && error.textContent === '请至少勾选一个来源。') error.hidden = true;
   };
   list.onchange = updateCount; updateCount();
   if (!state.documents.length) list.textContent = '请先在左侧上传课程资料。';

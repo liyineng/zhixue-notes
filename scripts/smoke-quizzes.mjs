@@ -109,11 +109,20 @@ try {
   await page.locator('#quiz-difficulty').selectOption('hard');
   await page.locator('#feature-topic').fill('第二章：谐振回路');
   await page.locator('#feature-source-count').click();
-  for (const checkbox of await page.locator('#feature-source-list input').all()) await checkbox.uncheck();
+  await page.locator('#feature-select-none').click();
+  assert.equal(await page.locator('#feature-source-list input:checked').count(), 0);
+  await page.locator('#close-features').click();
+  await page.locator('#summary-button').click();
+  assert.equal(await page.locator('#feature-source-list input:checked').count(), 0, 'empty selection must persist');
+  await page.locator('#feature-select-all').click();
+  assert.equal(await page.locator('#feature-source-list input:checked').count(), 2);
+  assert.match(await page.locator('#selection-status').innerText(), /2 \/ 2/, 'bulk feature selection must not alter chat source scope');
+  await page.locator('#feature-select-none').click();
   await page.locator('#feature-generate').click();
   await page.locator('#feature-error').waitFor({ state: 'visible' });
   assert.equal(configuration, undefined);
   await page.locator('#feature-source-list input[value="course"]').check();
+  assert.equal(await page.locator('#feature-error').isVisible(), false);
   await page.screenshot({ path: path.join(output, 'quiz-settings-desktop.png') });
   await page.locator('#feature-generate').click();
   await page.locator('.application-card').waitFor();
@@ -154,18 +163,23 @@ try {
   assert.equal(await conversation.getAttribute('data-preserved'), 'yes');
   assert.equal(await conversation.locator('details').first().evaluate(element => element.open), true);
   assert.equal(await page.locator('#question-input').inputValue(), '还没有发送的追问');
-  assert.equal(await page.locator('.chat-pane').isVisible(), false);
-  assert.equal(await page.locator('.sidebar').isVisible(), false);
-  await page.locator('#study-show-chat').click();
-  assert.equal(await page.locator('.chat-pane').isVisible(), true);
-  assert.equal(await page.locator('#question-input').inputValue(), '还没有发送的追问');
-  await page.locator('#question-input').fill('');
-  await page.locator('#study-close-chat').click();
-  await page.locator('#study-show-library').click();
-  assert.equal(await page.locator('.sidebar').isVisible(), true);
-  await page.locator('#study-close-library').click();
-  assert.equal(await page.locator('#viewer-document').isVisible(), true);
+  assert.equal(await page.locator('#quiz-dialog').evaluate(el => el.open), true);
+  assert.equal(await page.locator('#viewer-document').isVisible(), false, 'original is collapsed until a citation is opened');
   assert.equal(await page.locator('#quiz-workspace').isVisible(), true);
+  assert.equal(await page.locator('.quiz-explanation').count(), 0);
+  assert.equal(await page.locator('.quiz-check').isDisabled(), true);
+  await page.locator('.quiz-option').nth(1).click();
+  await page.locator('.quiz-check').click();
+  await page.locator('.quiz-feedback.is-incorrect').waitFor();
+  assert.match(await page.locator('.quiz-status').innerText(), /已答 1 \/ 2.*答对 0/);
+  await page.locator('.quiz-source').click();
+  await page.waitForFunction(() => document.querySelector('#source-text').textContent.includes('Series resonance'));
+  await page.locator('#viewer-scroll').waitFor({ state: 'visible' });
+  await page.evaluate(() => window.__quizCard = document.querySelector('.quiz-card'));
+  await page.locator('#collapse-quiz-source').click();
+  assert.equal(await page.locator('#viewer-document').isVisible(), false);
+  assert.equal(await page.evaluate(() => window.__quizCard === document.querySelector('.quiz-card')), true);
+  await page.locator('.quiz-source').click();
   await page.locator('#viewer-scroll').waitFor({ state: 'visible' });
   const original = await page.locator('#viewer-document').boundingBox();
   const practice = await page.locator('#quiz-workspace').boundingBox();
@@ -175,16 +189,9 @@ try {
   await page.mouse.move(studyHandle.x + 4, studyHandle.y + 80); await page.mouse.down();
   await page.mouse.move(studyHandle.x + 24, studyHandle.y + 80); await page.mouse.up();
   assert((await page.locator('#viewer-document').boundingBox()).width > original.width + 10);
-  assert.equal(await page.locator('.quiz-explanation').count(), 0);
-  assert.equal(await page.locator('.quiz-check').isDisabled(), true);
-  await page.locator('.quiz-option').nth(1).click();
-  await page.locator('.quiz-check').click();
-  await page.locator('.quiz-feedback.is-incorrect').waitFor();
-  assert.match(await page.locator('.quiz-status').innerText(), /已答 1 \/ 2.*答对 0/);
-  await page.locator('.quiz-source').click();
-  await page.waitForFunction(() => document.querySelector('#source-text').textContent.includes('Series resonance'));
-  assert.equal(await page.locator('#quiz-workspace').isVisible(), true);
-  assert.equal(await page.locator('#viewer-scroll').isVisible(), true);
+  assert.equal(await page.locator('#quiz-dialog').evaluate(el => el.open), true);
+  assert.equal(await conversation.getAttribute('data-preserved'), 'yes');
+  assert.equal(await page.locator('#question-input').inputValue(), '还没有发送的追问');
   await page.locator('.quiz-navigation button', { hasText: '下一题' }).click();
   assert.equal(await page.locator('.quiz-option .katex').count(), 4);
   assert.equal(await page.locator('.katex-error').count(), 0);
@@ -194,6 +201,9 @@ try {
   assert.match(await page.locator('.quiz-status').innerText(), /已答 1 \/ 2/);
   await page.locator('.quiz-option').first().click(); await page.locator('.quiz-check').click();
   await page.locator('.quiz-finished').waitFor();
+  await page.locator('.quiz-source').click();
+  await page.locator('#viewer-scroll').waitFor({state:'visible'});
+  await page.waitForFunction(() => document.querySelector('#page-total').textContent.includes('1') && document.querySelector('#pdf-canvas')?.width > 0);
   assert.match(await page.locator('.quiz-status').innerText(), /答对 1/);
   await page.screenshot({ path: path.join(output, 'quiz-desktop.png') });
   for (const width of [1180, 960]) {
@@ -271,7 +281,7 @@ try {
   console.log(JSON.stringify({ passed: true, settings: true, selectedSourcesOnly: true, grading: true, citations: true,
     persistedAfterReload: true, reset: true, math: true, summary: true, mobile: true, applicationLibrary: true,
     embeddedQuizPanel: true, simultaneousOriginalAndQuiz: true, responsiveStudyLayout: true,
-    focusReadingLayout: true, contextDrawers: true, conversationPreserved: true, draggableColumns: true, layoutPersistence: true, applicationDeleteUndo: true,
+    noteLikeDialog: true, collapsibleOriginal: true, bulkSourceSelection: true, conversationPreserved: true, draggableColumns: true, layoutPersistence: true, applicationDeleteUndo: true,
     readableNarrowHeaders: true, stickyQuizNavigation: true, independentReadingScroll: true }));
 } catch (error) {
   await page.screenshot({ path: path.join(output, 'failure.png') });

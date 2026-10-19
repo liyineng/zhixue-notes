@@ -197,7 +197,7 @@
         <div id="workspace-resizer" class="panel-resizer" role="separator" tabindex="0" aria-orientation="vertical" aria-label="调整问答与原文宽度" title="拖动调整问答与原文宽度，双击恢复默认"></div>
         <section class="viewer-pane">
           <div id="right-pane-tabs" class="right-pane-tabs" hidden>
-            <strong>阅读做题 <span>原文与测验同时显示</span></strong>
+            <strong>测验 <span>点击解析中的引用，对照原文</span></strong><button id="collapse-quiz-source" class="button ghost" type="button" hidden>收起原文</button>
             <button id="close-quiz-panel" type="button" class="icon-button compact" aria-label="收起测验" title="收起测验，进度自动保留">×</button>
           </div>
           <div id="viewer-document" class="viewer-document">
@@ -364,6 +364,8 @@
       </aside>
     </dialog>
 
+    <dialog id="quiz-dialog" class="settings-dialog quiz-dialog" aria-labelledby="quiz-workspace-title"></dialog>
+
     <dialog id="features-dialog" class="settings-dialog features-dialog" aria-labelledby="features-title">
       <form id="features-form">
         <div class="dialog-heading"><div><div class="feature-kicker">学习工具</div><h2 id="features-title">功能选择</h2></div><button id="close-features" class="icon-button" type="button" aria-label="关闭功能选择">×</button></div>
@@ -379,7 +381,7 @@
           </div>
           <p class="feature-help">单选题 · 提交后查看解析和引用 · 作答进度自动保存</p>
         </div>
-        <details class="feature-sources"><summary id="feature-source-count">来源</summary><div id="feature-source-list"></div></details>
+        <details class="feature-sources"><summary id="feature-source-count">来源</summary><div class="feature-source-actions"><button id="feature-select-all" class="button ghost" type="button">全选</button><button id="feature-select-none" class="button ghost" type="button">全不选</button></div><div id="feature-source-list"></div></details>
         <label><span id="feature-topic-label">复习重点（选填）</span><textarea id="feature-topic" rows="3" maxlength="300" placeholder="例如：整理第二章的主要概念和公式"></textarea></label>
         <p id="feature-error" class="feature-error" role="alert" hidden></p>
         <div class="dialog-actions"><button id="feature-generate" class="button primary" type="submit">生成提纲</button></div>

@@ -13,13 +13,14 @@ export function initializePanelResize(onResize = () => {}) {
   const defaults = { sidebar: 276, ratio: .5, studyRatio: .34, documentRatio: .48, documentVerticalRatio: .42 };
   const layout = Object.fromEntries(Object.entries(defaults).map(([name, value]) => [name, Number.isFinite(saved[name]) ? saved[name] : value]));
   const studying = () => viewer.classList.contains('study-open');
-  const horizontal = () => shell.classList.contains('study-focus') ? viewer.clientWidth >= 820 : innerWidth >= 1280;
-  const field = kind => kind === 'study' ? (horizontal() ? 'documentRatio' : 'documentVerticalRatio') : kind === 'ratio' && studying() ? 'studyRatio' : kind;
+  const popup = () => Boolean(viewer.closest('#quiz-dialog'));
+  const horizontal = () => (popup() || shell.classList.contains('study-focus')) ? viewer.clientWidth >= 820 : innerWidth >= 1280;
+  const field = kind => kind === 'study' ? (horizontal() ? 'documentRatio' : 'documentVerticalRatio') : kind === 'ratio' && studying() && !popup() ? 'studyRatio' : kind;
   const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
   let timer;
   function apply() {
     const width = shell.getBoundingClientRect().width;
-    const minimumWorkspace = studying() && horizontal() ? 1000 : width > 1080 ? 720 : 420;
+    const minimumWorkspace = studying() && !popup() && horizontal() ? 1000 : width > 1080 ? 720 : 420;
     const maximum = Math.max(220, Math.min(480, width - minimumWorkspace));
     const sidebarWidth = clamp(layout.sidebar, 220, maximum);
     shell.style.setProperty('--sidebar-width', `${sidebarWidth}px`);
@@ -27,7 +28,7 @@ export function initializePanelResize(onResize = () => {}) {
     sidebar.setAttribute('aria-valuenow', String(Math.round(sidebarWidth)));
     sidebar.setAttribute('aria-valuetext', `${Math.round(sidebarWidth)} 像素`);
     const available = Math.max(1, workspace.getBoundingClientRect().width - 8);
-    const minimumRight = studying() && horizontal() ? 620 : 280;
+    const minimumRight = studying() && !popup() && horizontal() ? 620 : 280;
     const lower = Math.min(.5, 320 / available), upper = Math.max(lower, 1 - minimumRight / available);
     const ratio = clamp(layout[field('ratio')], lower, upper);
     workspace.style.setProperty('--chat-share', `${ratio}fr`);
