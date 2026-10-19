@@ -1,3 +1,4 @@
+import { initializeDeletedChatPanel } from '/static/deleted-chat-panel.js';
 import { initializeAttachmentManager } from '/static/attachment-manager.js';
 import { renderAnswerHtml, matchingSourceLines } from "/static/answer-format.js";
 import { initializeCloudSync } from '/static/cloud-sync.js';
@@ -1854,6 +1855,16 @@ ui["clear-chat"].addEventListener("click", async () => {
     showToast("当前笔记本的对话已清空。");
   } catch (error) { showToast(error.message, true); }
   finally { setBusy(state.chatPending); }
+});
+
+initializeDeletedChatPanel({
+  api, notebookId: () => state.notebookId, isBusy: () => state.busy, toast: showToast,
+  onRestored: async (result, record, notebookId) => {
+    if (state.notebookId !== notebookId) return;
+    await loadChat(true);
+    // Reconcile restored history without replacing existing answers or drafts.
+    if (state.notebookId === notebookId && record.result?.quiz) setLibraryTab('applications');
+  },
 });
 
 ui["undo-chat-delete"].addEventListener("click", async () => {

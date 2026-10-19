@@ -464,11 +464,25 @@ def deleted_exchange_count(notebook_id: str) -> int:
                             (notebook_id,)).fetchone()[0]
 
 
-def restore_exchange(notebook_id: str) -> str | None:
+def list_deleted_exchanges(notebook_id: str) -> list[dict[str, Any]]:
+    with connection() as conn:
+        rows = conn.execute("""SELECT * FROM chat_exchanges WHERE notebook_id=? AND deleted_at IS NOT NULL
+                              ORDER BY deleted_at DESC, sequence DESC LIMIT 5""", (notebook_id,)).fetchall()
+    result = []
+    for row in rows:
+        item = _row_to_dict(row)
+        for field in ('result', 'images', 'reply_to'):
+            item[field] = json.loads(item.pop(field + '_json'))
+        result.append(item)
+    return result
+
+
+def restore_exchange(notebook_id: str, exchange_id: str | None = None) -> str | None:
     with connection() as conn:
         conn.execute("BEGIN IMMEDIATE")
         row = conn.execute("""SELECT id FROM chat_exchanges WHERE notebook_id=? AND deleted_at IS NOT NULL
-                              ORDER BY deleted_at DESC, sequence DESC LIMIT 1""", (notebook_id,)).fetchone()
+                              AND (? IS NULL OR id=?)
+                              ORDER BY deleted_at DESC, sequence DESC LIMIT 1""", (notebook_id, exchange_id, exchange_id)).fetchone()
         if row is None:
             return None
         conn.execute("UPDATE chat_exchanges SET deleted_at=NULL WHERE id=? AND notebook_id=?", (row["id"], notebook_id))

@@ -1377,3 +1377,25 @@ body.quiz-page { overflow: auto; height: auto; min-height: 100dvh; background: v
 .attachment-extracted pre { max-height: 240px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.8; font: inherit; background: var(--paper, #f6f8fb); padding: 12px; border-radius: 6px; }
 .attachment-jump { outline: 2px solid var(--accent, #477c92); outline-offset: -2px; }
 @media (max-width: 600px) { .attachments-dialog { padding: 16px; } .managed-attachment { padding: 12px; } .attachment-card-actions .button { min-height: 40px; } }
+
+.deleted-chat-controls { display: flex; flex-shrink: 0; }
+.chat-actions .deleted-chat-controls .button { border-radius: 7px 0 0 7px; }
+.chat-actions .deleted-chat-controls #manage-deleted-chat { border-left: 0; border-radius: 0 7px 7px 0; padding-inline: 7px; }
+.deleted-chat-dialog { width: min(760px, calc(100vw - 24px)); padding: 24px; }
+.deleted-chat-dialog .dialog-heading p { margin-bottom: 0; }
+.deleted-chat-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0 0 14px; color: var(--muted); font-size: 12px; }
+.deleted-chat-toolbar .button { min-height: 30px; padding: 3px 10px; font-size: 12px; }
+.deleted-chat-list { display: grid; gap: 12px; }
+.deleted-chat-card { min-width: 0; border: 1px solid var(--line); border-radius: 10px; padding: 16px; }
+.deleted-chat-card-heading { display: flex; align-items: flex-start; gap: 12px; }
+.deleted-chat-card-heading h3 { min-width: 0; flex: 1; margin: 3px 0 0; font-size: 14px; line-height: 1.6; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.deleted-chat-card-heading .button { flex-shrink: 0; font-size: 12px; padding: 5px 10px; min-height: 32px; color: var(--teal); }
+.deleted-chat-meta, .deleted-chat-retention, .deleted-chat-empty { color: var(--muted); font-size: 12px; line-height: 1.8; }
+.deleted-chat-card > details > summary { font-size: 12px; cursor: pointer; color: var(--muted); }
+.deleted-chat-preview { max-height: min(440px, 55dvh); overflow: auto; font-size: 13px; line-height: 1.8; margin-top: 12px; padding: 14px; border-radius: 8px; background: var(--paper); overflow-wrap: anywhere; }
+.deleted-chat-question { white-space: pre-wrap; padding-bottom: 12px; border-bottom: 1px solid var(--line); margin-bottom: 12px; font-weight: 600; }
+.deleted-chat-files { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0 14px; }
+.deleted-chat-files a { max-width: 100%; overflow-wrap: anywhere; color: var(--teal); }
+.deleted-citation-number { color: var(--teal); }
+.deleted-chat-preview details p { white-space: pre-wrap; }
+@media (max-width: 600px) { .deleted-chat-dialog { padding: 16px; } .deleted-chat-card { padding: 12px; } .deleted-chat-card-heading .button { min-height: 40px; } }

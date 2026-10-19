@@ -1272,6 +1272,21 @@ def chat_history(notebook_id: str) -> dict[str, Any]:
     return {"exchanges": db.list_exchanges(notebook_id), "deleted_count": db.deleted_exchange_count(notebook_id)}
 
 
+@app.get('/api/notebooks/{notebook_id}/chat/deleted')
+def deleted_chat_history(notebook_id: str) -> dict[str, Any]:
+    _notebook(notebook_id)
+    return {'exchanges': db.list_deleted_exchanges(notebook_id), 'retention_limit': 5}
+
+
+@app.post('/api/notebooks/{notebook_id}/chat/{exchange_id}/restore')
+def restore_chat_exchange(notebook_id: str, exchange_id: str) -> dict[str, Any]:
+    _notebook(notebook_id)
+    restored = db.restore_exchange(notebook_id, exchange_id)
+    if restored is None:
+        raise HTTPException(status_code=404, detail='这条删除记录不存在、已恢复或不属于当前笔记本。')
+    return {'restored': True, 'chat_id': restored, 'deleted_count': db.deleted_exchange_count(notebook_id)}
+
+
 @app.get('/api/notebooks/{notebook_id}/chat/{exchange_id}/status')
 def generation_status(notebook_id: str, exchange_id: str) -> dict[str, Any]:
     _notebook(notebook_id)

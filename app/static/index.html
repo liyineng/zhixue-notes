@@ -150,7 +150,7 @@
 
         <section id="conversation-pane" class="chat-pane">
           <button id="study-close-chat" class="icon-button study-drawer-close" type="button" aria-label="收起对话面板">×</button>
-          <header class="chat-heading"><strong id="notebook-title">我的课程</strong><div class="chat-actions"><span id="selection-status">正在加载来源</span><button id="undo-chat-delete" type="button" class="button ghost" disabled title="恢复最近删除的问答，最多保留 5 条">撤销删除</button><button id="clear-chat" type="button" class="button ghost">清空对话</button></div></header>
+          <header class="chat-heading"><strong id="notebook-title">我的课程</strong><div class="chat-actions"><span id="selection-status">正在加载来源</span><div class="deleted-chat-controls"><button id="undo-chat-delete" type="button" class="button ghost" disabled title="恢复最近删除的问答，最多保留 5 条">撤销删除</button><button id="manage-deleted-chat" type="button" class="button ghost" aria-label="管理已删除对话" title="查看最近 5 条删除记录，选择恢复">记录</button></div><button id="clear-chat" type="button" class="button ghost">清空对话</button></div></header>
           <div id="messages" class="messages">
             <div id="empty-chat" class="empty-chat">
               <div class="empty-kicker">课程资料问答</div>
@@ -246,6 +246,13 @@
         </section>
       </main>
     </div>
+
+    <dialog id="deleted-chat-dialog" class="settings-dialog deleted-chat-dialog" aria-labelledby="deleted-chat-title">
+      <div class="dialog-heading"><div><h2 id="deleted-chat-title">已删除的对话</h2><p>保留当前笔记本最近 5 条删除记录，恢复时一并保留回答、引用和附件。</p></div><button id="close-deleted-chat" class="icon-button" type="button" aria-label="关闭删除记录">×</button></div>
+      <div class="deleted-chat-toolbar"><span id="deleted-chat-status" role="status"></span><button id="refresh-deleted-chat" type="button" class="button ghost">刷新</button></div>
+      <div id="deleted-chat-list" class="deleted-chat-list"></div>
+      <p class="deleted-chat-retention">新增删除记录超过 5 条时，最早的记录会自动清理。清空对话会同时清除删除记录。</p>
+    </dialog>
 
     <dialog id="attachments-dialog" class="settings-dialog attachments-dialog" aria-labelledby="attachments-title">
       <div class="dialog-heading"><div><h2 id="attachments-title">问题附件</h2><p>独立管理输入框上传的资料，不加入课程来源库。</p></div><button id="close-attachments" class="icon-button" type="button" aria-label="关闭附件管理">×</button></div>

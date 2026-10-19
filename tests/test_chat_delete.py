@@ -77,3 +77,56 @@ class ChatDeleteTests(unittest.TestCase):
         result = self.client.delete(f'/api/notebooks/{notebook}/chat/pending-delete-test')
         self.assertEqual(result.status_code, 409)
         self.assertEqual(db.list_exchanges(notebook)[0]['status'], 'pending')
+
+    def test_deleted_panel_lists_only_own_records_and_restores_selected_snapshot(self):
+        notebook = self.notebook('选择恢复')
+        other = self.notebook('隔离')
+        image = main.QUESTION_IMAGE_DIR / 'restore-panel.png'
+        image.write_bytes(b'image-fixture')
+        db.insert_question_image({'id':'restore-file', 'notebook_id':notebook, 'name':'题目.png',
+                                  'path':str(image), 'ocr_text':'完整题干'})
+        snapshot = {'id':'restore-file', 'name':'题目.png', 'url':'/api/question-images/restore-file/file'}
+        db.start_exchange('selected-older', notebook, '较早删除的问题', [snapshot], {'answer':'引用的回答快照'})
+        original = {'answer':'详细答案 [1]', 'citations':[{'index':1, 'document_id':'source', 'page':4, 'text':'原文'}], 'image_question_text':'完整题干'}
+        db.finish_exchange('selected-older', original)
+        self.exchange(notebook, 'newer')
+        self.exchange(notebook, 'active')
+        self.exchange(other, 'foreign-deleted')
+        url = f'/api/notebooks/{notebook}/chat'
+        self.client.delete(url + '/selected-older')
+        self.client.delete(url + '/newer')
+        self.client.delete(f'/api/notebooks/{other}/chat/foreign-deleted')
+        db.init_db()
+        response = self.client.get(url + '/deleted')
+        self.assertEqual(response.status_code, 200, response.text)
+        deleted = response.json()['exchanges']
+        self.assertEqual(response.json()['retention_limit'], 5)
+        self.assertEqual([item['id'] for item in deleted], ['newer', 'selected-older'])
+        self.assertEqual(deleted[1]['result'], original)
+        self.assertEqual(deleted[1]['images'], [snapshot])
+        self.assertEqual(deleted[1]['reply_to']['answer'], '引用的回答快照')
+        self.assertEqual(self.client.post(f'/api/notebooks/{other}/chat/selected-older/restore').status_code, 404)
+        self.assertEqual(self.client.post(url + '/active/restore').status_code, 404)
+        restored = self.client.post(url + '/selected-older/restore')
+        self.assertEqual(restored.status_code, 200, restored.text)
+        self.assertEqual(restored.json()['deleted_count'], 1)
+        self.assertEqual(restored.json()['chat_id'], 'selected-older')
+        self.assertEqual(self.client.post(url + '/selected-older/restore').status_code, 404)
+        self.assertEqual(db.get_exchange(notebook, 'selected-older')['result'], original)
+        self.assertEqual(db.get_exchange(notebook, 'selected-older')['reply_to']['answer'], '引用的回答快照')
+        self.assertTrue(image.exists())
+        self.assertEqual([item['id'] for item in self.client.get(url + '/deleted').json()['exchanges']], ['newer'])
+        self.assertEqual(self.client.post(url + '/undo').json()['chat_id'], 'newer')
+        self.assertEqual(self.client.get(url + '/deleted').json()['exchanges'], [])
+
+    def test_deleted_panel_never_exposes_expired_sixth_record(self):
+        notebook = self.notebook('删除记录上限')
+        url = f'/api/notebooks/{notebook}/chat'
+        for index in range(7):
+            self.exchange(notebook, f'record-{index}')
+            self.client.delete(url + f'/record-{index}')
+        self.assertEqual([item['id'] for item in self.client.get(url + '/deleted').json()['exchanges']],
+                         [f'record-{index}' for index in range(6, 1, -1)])
+        self.assertEqual(self.client.post(url + '/record-0/restore').status_code, 404)
+        self.client.delete(url)
+        self.assertEqual(self.client.get(url + '/deleted').json()['exchanges'], [])
