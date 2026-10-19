@@ -133,7 +133,7 @@ class AskRequest(BaseModel):
     image_text: str | None = Field(default=None, max_length=20000)
     document_ids: list[str] | None = None
     notebook_id: str | None = None
-    top_k: int | None = Field(default=None, ge=1, le=12)
+    top_k: int | None = Field(default=None, ge=0, le=12)
 
 
 class SummaryRequest(BaseModel):
@@ -165,7 +165,7 @@ class SettingsRequest(BaseModel):
     temperature: float | None = Field(default=None, ge=0, le=2)
     max_tokens: int | None = Field(default=None, ge=128, le=8192)
     context_window: int | None = Field(default=None, ge=0, le=10000000)
-    top_k: int | None = Field(default=None, ge=1, le=12)
+    top_k: int | None = Field(default=None, ge=0, le=12)
     vision_model: str | None = Field(default=None, max_length=300)
     vision_base_url: str | None = Field(default=None, max_length=1000)
     vision_api_key: str | None = Field(default=None, max_length=2000)
@@ -765,7 +765,7 @@ async def ask(payload: AskRequest) -> dict[str, Any]:
 async def _ask(payload: AskRequest, exchange_id: str) -> dict[str, Any]:
     settings = db.get_settings()
     model_context = await resolve_context(settings)
-    top_k = payload.top_k or int(settings.get("top_k", 6))
+    top_k = payload.top_k if payload.top_k is not None else int(settings.get("top_k", 0))
     selected_documents = _scope(payload.notebook_id, payload.document_ids)
     if not payload.question.strip() and not payload.image_ids:
         raise HTTPException(status_code=400, detail="请输入问题或上传问题附件。")
@@ -920,7 +920,7 @@ async def _ask(payload: AskRequest, exchange_id: str) -> dict[str, Any]:
                                                activity=source_activity(selected_documents, combined_query))
                     results = _index().search(
                         combined_query,
-                        top_k=min(20, top_k * 3),
+                        top_k=min(20, top_k * 3) if top_k else 0,
                         document_ids=document_ids,
                     )
                     if not results and combined_query != effective_question:
@@ -930,13 +930,17 @@ async def _ask(payload: AskRequest, exchange_id: str) -> dict[str, Any]:
                                                    activity=source_activity(selected_documents))
                         results = _index().search(
                             effective_question,
-                            top_k=min(20, top_k * 3),
+                            top_k=min(20, top_k * 3) if top_k else 0,
                             document_ids=document_ids,
                         )
                     candidates = _contexts_for_results(results)
                     db.set_generation_progress(exchange_id, 'evidence', '核对候选原文',
                                                f'找到 {len(candidates)} 个候选片段，正在核对下列资料中的原文。' if candidates else '未找到匹配片段，正在检查是否有可用依据。',
                                                activity=source_activity(candidates, retrieval_query))
+                    if top_k == 0 and candidates:
+                        db.set_generation_progress(exchange_id, 'evidence', '核对全部相关片段',
+                            f'正在分批核对 {len(candidates)} 个匹配片段，不设片段数上限。',
+                            activity=source_activity(candidates, retrieval_query))
                     contexts = await select_evidence(effective_question, candidates, settings, top_k)
         retrieval_hits = len(contexts)
         coverage = _summary_scope(contexts, selected_documents) if analysis["intent"] == "summary" else None
@@ -955,6 +959,17 @@ async def _ask(payload: AskRequest, exchange_id: str) -> dict[str, Any]:
                     f"- 《{item['document_name']}》第 {', '.join(map(str, item['pages']))} 页：图片或公式对象尚未成功识别，以上清单不保证完整。"
                     for item in unread)
         else:
+            if top_k == 0 and contexts and model_configured(settings):
+                evidence_size = sum(estimate_tokens(str(c['text'])[:4000]) +
+                                    estimate_tokens(str(c['document_name'])) + 256 for c in contexts)
+                if history:
+                    without_history = effective_question.replace(history, '', 1)
+                    remaining = history_budget(model_context, settings, without_history, evidence_size)
+                    shorter_history, retained_turns = recent_context(previous_exchanges, remaining)
+                    effective_question = effective_question.replace(history, shorter_history, 1)
+                    history, context_turns = shorter_history, retained_turns
+                if estimate_tokens(effective_question) + evidence_size > history_budget(model_context, settings, ''):
+                    raise RuntimeError('全部相关片段超出当前模型的上下文容量，请缩小勾选来源范围或检查模型上下文设置。')
             answer = await answer_question(effective_question, contexts, settings,
                                            document_names, analysis["needs_retrieval"])
         answer, contexts = cited_sources(answer, contexts)

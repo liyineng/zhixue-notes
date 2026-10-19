@@ -83,7 +83,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "model": "",
     "temperature": 0.2,
     "max_tokens": 1400,
-    "top_k": 6,
+    "top_k": 0,
     "vision_model": "",
     "vision_base_url": "",
     "vision_api_key": "",

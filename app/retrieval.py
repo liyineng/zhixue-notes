@@ -222,7 +222,7 @@ class BM25Index:
     def search(
         self,
         query: str,
-        top_k: int = 6,
+        top_k: int = 0,
         document_ids: set[str] | None = None,
     ) -> list[SearchResult]:
         query_tokens = set(tokenize(query))
@@ -264,7 +264,7 @@ class BM25Index:
                 item.chunk.get("ordinal", 0),
             )
         )
-        return scores[: max(1, min(top_k, 20))]
+        return scores if top_k == 0 else scores[: max(1, min(top_k, 20))]
 
 
 def focus_source(context: dict[str, Any], query: str) -> dict[str, Any]:

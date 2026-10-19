@@ -9,6 +9,7 @@ from urllib.parse import urlparse
 import httpx
 
 from .retrieval import excerpt, quoted_evidence
+from .model_context import context_info, history_budget, estimate_tokens
 
 PLANNER_SYSTEM_PROMPT = """你是课程资料学习助手的检索规划器。
 分析用户输入，只返回一个 JSON 对象，不要使用代码块，不要添加解释。
@@ -123,10 +124,34 @@ def _context_text(contexts: list[dict[str, Any]], character_limit: int = 4000) -
 async def select_evidence(question: str, candidates: list[dict[str, Any]],
                           settings: dict[str, Any], limit: int = 6) -> list[dict[str, Any]]:
     if not candidates or not model_configured(settings):
-        return candidates[:limit]
+        return candidates if limit == 0 else candidates[:limit]
+    if limit == 0:
+        # Check every matching candidate in bounded requests, without silently
+        # restoring a six/twenty-fragment cap. Keep original provenance intact.
+        selected, seen = [], set()
+        capacity = history_budget(context_info(settings), {**settings, 'max_tokens': max(5600, int(settings.get('max_tokens') or 1400))}, question)
+        batches, batch, used = [], [], 0
+        for candidate in candidates:
+            size = estimate_tokens(_context_text([candidate])) + 2
+            if size > capacity:
+                raise RuntimeError('相关资料超出当前模型的上下文容量，请缩小勾选来源范围或检查模型上下文设置。')
+            if batch and (len(batch) >= 8 or used + size > capacity):
+                batches.append(batch)
+                batch, used = [], 0
+            batch.append(candidate)
+            used += size
+        if batch:
+            batches.append(batch)
+        for batch in batches:
+            for evidence in await select_evidence(question, batch, settings, len(batch)):
+                key = (evidence['document_id'], evidence.get('page'), evidence['text'])
+                if key not in seen:
+                    seen.add(key)
+                    selected.append({**evidence, 'index': len(selected) + 1})
+        return selected
     content = await chat_completion(
         base_url=str(settings["base_url"]), api_key=str(settings.get("api_key", "")),
-        model=str(settings["model"]), temperature=0, max_tokens=1800, thinking=False,
+        model=str(settings["model"]), temperature=0, max_tokens=max(1800, limit * 700), thinking=False,
         messages=[{"role": "system", "content":
             "你是资料证据筛选器。只返回 JSON 对象：{\"evidence\":[{\"source\":1,\"quote\":\"原文连续摘录\"}]}。"
             "挑选直接支持解题原理或方法的资料，按相关性排序。不要被主机号、设备号、题号等巧合词吸引。"
