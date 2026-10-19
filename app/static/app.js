@@ -97,6 +97,8 @@ const emptyChatTemplate = dom.emptyChat.outerHTML;
 let currentNote = null;
 let noteSaving = false;
 let noteEditing = false;
+let noteSourcePlaceholder = null;
+let noteCitationGeneration = 0;
 const savingAnswers = new Set();
 let chatPollTimer = null;
 let chatPollFailures = 0;
@@ -582,8 +584,8 @@ async function renderPdfPage(pageNumber) {
   if (generation !== state.renderGeneration) return;
 
   const baseViewport = page.getViewport({ scale: 1 });
-  const availableWidth = Math.max(320, dom.viewerScroll.clientWidth - 44);
-  const scale = Math.max(0.55, Math.min(1.9, availableWidth / baseViewport.width));
+  const availableWidth = Math.max(noteSourcePlaceholder ? 140 : 320, dom.viewerScroll.clientWidth - (noteSourcePlaceholder ? 24 : 44));
+  const scale = Math.max(noteSourcePlaceholder ? 0.2 : 0.55, Math.min(1.9, availableWidth / baseViewport.width));
   const viewport = page.getViewport({ scale });
   const outputScale = window.devicePixelRatio || 1;
   const context = dom.canvas.getContext("2d", { alpha: false });
@@ -1224,8 +1226,7 @@ function plainSourceText(citation) {
 }
 
 function showCitation(citation, messageId, citationIndex) {
-  closeStudyDrawers();
-  updateStudyLayout();
+  if (!noteSourcePlaceholder) { closeStudyDrawers(); updateStudyLayout(); }
   if (!["pdf", "pptx"].includes(citation.document_kind)) resetViewer();
   state.activeCitation = Number(citationIndex);
   state.highlightMessageId = messageId;
@@ -1271,6 +1272,7 @@ function showCitation(citation, messageId, citationIndex) {
 }
 
 function setMobilePane(pane) {
+  if (pane === 'viewer' && noteSourcePlaceholder && ui['note-dialog'].open) return;
   document.querySelectorAll(".mobile-tab").forEach((tab) => {
     tab.classList.toggle("active", tab.dataset.pane === pane);
     tab.setAttribute('aria-pressed', String(tab.dataset.pane === pane));
@@ -1985,9 +1987,36 @@ function setNoteMode(editing) {
   }
 }
 
+function dockNoteSource() {
+  if (noteSourcePlaceholder) return;
+  const viewer = document.getElementById('viewer-document');
+  noteSourcePlaceholder = document.createComment('note-source-viewer-home');
+  viewer.before(noteSourcePlaceholder);
+  document.getElementById('note-source-slot').append(viewer);
+  document.getElementById('note-source-pane').hidden = false;
+  ui['note-dialog'].classList.add('has-note-source');
+}
+
+function restoreNoteSource() {
+  noteCitationGeneration++;
+  const viewer = document.getElementById('viewer-document');
+  if (noteSourcePlaceholder) {
+    noteSourcePlaceholder.replaceWith(viewer);
+    noteSourcePlaceholder = null;
+  }
+  document.getElementById('note-source-pane').hidden = true;
+  ui['note-dialog'].classList.remove('has-note-source');
+  if (state.pdfDocument) requestAnimationFrame(() => {
+    if (state.pdfDocument && viewer.clientWidth > 0) renderPdfPage(state.pdfPage).catch(error => showToast(error.message, true));
+  });
+}
+
 async function openNoteCitation(citation) {
-  if (!citation) return;
-  if (!state.documents.some(doc => doc.id === citation.document_id)) {
+  if (!citation || !ui['note-dialog'].open) return;
+  const generation = ++noteCitationGeneration, notebookId = state.notebookId, note = currentNote;
+  const sourceDocument = state.documents.find(doc => doc.id === citation.document_id);
+  if (!sourceDocument) {
+    restoreNoteSource();
     const snapshot = document.getElementById('note-citation-preview');
     snapshot.hidden = false;
     snapshot.textContent = `保存时的引用 [${citation.index}] · ${citation.document_name}${citation.page ? ` · 第 ${citation.page} 页` : ''}\n${citation.text || '未保存引用原文。'}`;
@@ -1996,14 +2025,17 @@ async function openNoteCitation(citation) {
   }
   try {
     const {chunks} = await api(`/api/documents/${citation.document_id}/chunks`);
+    if (generation !== noteCitationGeneration || !ui['note-dialog'].open || currentNote !== note || state.notebookId !== notebookId) return;
     const chunk = chunks.find(item => item.id === citation.chunk_id);
-    if (!closeNote()) return;
+    document.getElementById('note-citation-preview').hidden = true;
+    dockNoteSource();
     const lines = matchingSourceLines(citation, chunks);
-    await showCitation({...citation, lines:lines.length ? lines : chunk?.lines || []}, '', citation.index);
+    await showCitation({...citation, document_kind:citation.document_kind || sourceDocument.kind, lines:lines.length ? lines : chunk?.lines || []}, '', citation.index);
   } catch (error) { showToast(error.message, true); }
 }
 
 function openNote(note = null) {
+  noteCitationGeneration++;
   currentNote = note;
   ui["note-title"].value = note?.title || "";
   ui["note-content"].value = note?.content || "";
@@ -2169,6 +2201,8 @@ document.getElementById('cancel-note-edit').addEventListener('click', () => {
 });
 ui["new-note"].addEventListener("click", () => openNote());
 ui["close-note"].addEventListener("click", closeNote);
+ui['note-dialog'].addEventListener('close', restoreNoteSource);
+document.getElementById('close-note-source').addEventListener('click', restoreNoteSource);
 ui["note-dialog"].addEventListener("cancel", (event) => { event.preventDefault(); closeNote(); });
 window.addEventListener("beforeunload", (event) => {
   if (ui["note-dialog"].open && (noteSaving || noteDirty())) {

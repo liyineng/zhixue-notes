@@ -358,6 +358,10 @@
           <button id="save-note" class="button primary" type="submit">保存笔记</button>
         </div>
       </form>
+      <aside id="note-source-pane" class="note-source-pane" aria-label="笔记引用原文" hidden>
+        <div class="note-source-heading"><strong>对照原文</strong><button id="close-note-source" class="icon-button" type="button" aria-label="收起笔记原文" title="收起原文，继续阅读笔记">×</button></div>
+        <div id="note-source-slot" class="note-source-slot"></div>
+      </aside>
     </dialog>
 
     <dialog id="features-dialog" class="settings-dialog features-dialog" aria-labelledby="features-title">

@@ -80,7 +80,9 @@ try{
  assert.equal(await page.evaluate(()=>window.__noteExportURL),'/api/notes/answer-original/export');
  assert.equal(patches,1,'read-only export must not rewrite note');
  await page.locator('#note-reading-body [data-citation="1"]').click();
- await page.waitForFunction(()=>!document.getElementById('note-dialog').open);
+ await page.locator('#note-source-pane').waitFor({state:'visible'});
+ assert(await page.locator('#note-dialog').evaluate(el=>el.open),'citation must keep note open');
+ assert(await page.locator('#note-reading').isVisible());
  await page.waitForFunction(()=>document.getElementById('source-text').textContent.includes('握手与挥手的原文'));
  await page.reload({waitUntil:'networkidle'});
  await page.locator('.save-answer.is-saved').waitFor();
