@@ -87,6 +87,8 @@ try {
   // Resized chat columns must retain a readable notebook title and reachable actions.
   for (const width of [320, 390, 820, 1180, 1920]) {
     await page.setViewportSize({ width, height: 844 });
+    // Panel widths are recalculated on animation frames after a resize.
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
     const heading = await page.locator('.chat-heading').boundingBox();
     const title = await page.locator('#notebook-title').boundingBox();
     assert(title.width >= 120, `notebook title squeezed at ${width}`);

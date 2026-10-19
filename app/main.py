@@ -382,6 +382,65 @@ def _public_image(image: dict[str, Any]) -> dict[str, Any]:
             "url": f"/api/question-images/{image['id']}/file"}
 
 
+class AttachmentRenameRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+
+
+def _managed_attachment(notebook_id: str, attachment_id: str) -> dict[str, Any]:
+    _notebook(notebook_id)
+    image = db.get_question_image(attachment_id)
+    if not image or image['notebook_id'] != notebook_id:
+        raise HTTPException(status_code=404, detail='当前笔记本中没有这个问题附件。')
+    return image
+
+
+@app.get('/api/notebooks/{notebook_id}/attachments')
+def list_question_attachments(notebook_id: str) -> dict[str, Any]:
+    _notebook(notebook_id)
+    usage = db.attachment_usage(notebook_id)
+    attachments = []
+    for image in sorted(db.notebook_images(notebook_id), key=lambda item: (item['created_at'], item['id']), reverse=True):
+        item = _public_image(image)
+        item.pop('ocr_text')  # Fetch extracted text only when opened or reused.
+        path = Path(image['path'])
+        exists = path.is_file()
+        attachments.append({**item, 'created_at': image['created_at'], 'available': exists,
+                            'size_bytes': path.stat().st_size if exists else 0,
+                            'exchanges': usage.get(image['id'], [])})
+    return {'attachments': attachments}
+
+
+@app.get('/api/notebooks/{notebook_id}/attachments/{attachment_id}')
+def get_managed_attachment(notebook_id: str, attachment_id: str) -> dict[str, Any]:
+    return {'attachment': _public_image(_managed_attachment(notebook_id, attachment_id))}
+
+
+@app.patch('/api/notebooks/{notebook_id}/attachments/{attachment_id}')
+def rename_question_attachment(notebook_id: str, attachment_id: str, payload: AttachmentRenameRequest) -> dict[str, Any]:
+    image = _managed_attachment(notebook_id, attachment_id)
+    name = payload.name.strip()
+    if not name or any(char in name for char in '/\\') or any(ord(char) < 32 for char in name):
+        raise HTTPException(status_code=400, detail='文件名不能为空，也不能包含路径或控制字符。')
+    # Keep the original extension so downloads remain recognizable to the OS.
+    suffix = Path(image['name']).suffix
+    if suffix and not name.lower().endswith(suffix.lower()):
+        raise HTTPException(status_code=400, detail=f'请保留原文件扩展名 {suffix}。')
+    db.rename_attachment(notebook_id, attachment_id, name)
+    return {'attachment': _public_image(db.get_question_image(attachment_id))}
+
+
+@app.delete('/api/notebooks/{notebook_id}/attachments/{attachment_id}')
+def delete_managed_attachment(notebook_id: str, attachment_id: str) -> dict[str, bool]:
+    _managed_attachment(notebook_id, attachment_id)
+    try:
+        path = db.remove_unused_attachment(notebook_id, attachment_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if path:
+        Path(path).unlink(missing_ok=True)
+    return {'deleted': bool(path)}
+
+
 @app.post("/api/question-images", status_code=201)
 async def upload_question_image(file: UploadFile = File(...), notebook_id: str = "default") -> dict[str, Any]:
     _notebook(notebook_id)

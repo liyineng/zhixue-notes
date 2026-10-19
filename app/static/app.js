@@ -1,3 +1,4 @@
+import { initializeAttachmentManager } from '/static/attachment-manager.js';
 import { renderAnswerHtml, matchingSourceLines } from "/static/answer-format.js";
 import { initializeCloudSync } from '/static/cloud-sync.js';
 import { presentationHighlights } from '/static/presentation-highlights.js';
@@ -1079,7 +1080,7 @@ function renderDraftImages() {
       if (state.busy) return;
       if (state.imageTextEdited && !window.confirm("移除附件会重置校对文字，继续？")) return;
       try {
-        await api(`/api/question-images/${image.id}`, { method: "DELETE" });
+        // Detach from this question; permanent deletion lives in the manager.
         state.draftImages = state.draftImages.filter((item) => item.id !== image.id);
         renderDraftImages();
       } catch (error) { showToast(error.message, true); }
@@ -1092,6 +1093,41 @@ function renderDraftImages() {
 async function attachQuestionFiles(files) {
   return uploadFiles(files, true);
 }
+
+initializeAttachmentManager({
+  api, notebookId: () => state.notebookId, isBusy: () => state.busy, toast: showToast,
+  onUse: async attachment => {
+    if (state.busy) return false;
+    if (state.draftImages.some(item => item.id === attachment.id)) { showToast('这个附件已在本次问题中。'); return false; }
+    if (state.draftImages.length >= 10) { showToast('每次最多附带 10 个问题附件。', true); return false; }
+    if (attachment.kind !== 'document' && state.draftImages.filter(item => item.kind !== 'document').length >= 3) {
+      showToast('每次最多附带 3 张题目图片。', true); return false;
+    }
+    if (state.imageTextEdited && !window.confirm('添加附件会重置校对文字，继续？')) return false;
+    state.draftImages.push(attachment); renderDraftImages(); return true;
+  },
+  onRename: attachment => {
+    const draft = state.draftImages.find(item => item.id === attachment.id);
+    if (draft) {
+      draft.name = attachment.name;
+      const edited = state.imageTextEdited, text = ui['question-image-text'].value;
+      renderDraftImages();
+      if (edited) { state.imageTextEdited = true; ui['question-image-text'].value = text; }
+    }
+  },
+  deleteNote: id => state.draftImages.some(item => item.id === id) ? '此附件也会从本次提问移除，附件校对文字将重置。' : '',
+  onDelete: id => {
+    if (state.draftImages.some(item => item.id === id)) {
+      state.draftImages = state.draftImages.filter(item => item.id !== id); renderDraftImages();
+    }
+  },
+  onJump: id => {
+    setMobilePane('chat');
+    const target = [...dom.messages.querySelectorAll('article[data-exchange-id]')].find(item => item.dataset.exchangeId === id);
+    if (target) { target.scrollIntoView({block:'center', behavior:'smooth'}); target.classList.add('attachment-jump'); window.setTimeout(() => target.classList.remove('attachment-jump'), 1800); }
+    else showToast('这条对话暂未显示，请刷新后查看。');
+  },
+});
 
 ui["attach-question-image"].addEventListener("click", () => ui["question-image-input"].click());
 ui["question-image-input"].addEventListener("change", (event) => attachQuestionFiles([...event.target.files]));

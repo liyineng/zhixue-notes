@@ -528,3 +528,36 @@ def notebook_images(notebook_id: str) -> list[dict[str, Any]]:
 def delete_question_image(image_id: str) -> None:
     with connection() as conn:
         conn.execute("DELETE FROM question_images WHERE id=?", (image_id,))
+
+
+def attachment_usage(notebook_id: str) -> dict[str, list[dict[str, Any]]]:
+    """Include retained deletions: undo must never restore a missing attachment."""
+    usage = {}
+    with connection() as conn:
+        rows = conn.execute('SELECT id, question, status, deleted_at, images_json FROM chat_exchanges '
+                            'WHERE notebook_id=? ORDER BY created_at DESC, sequence DESC', (notebook_id,)).fetchall()
+    for row in rows:
+        for identity in {item['id'] for item in json.loads(row['images_json'])}:
+            usage.setdefault(identity, []).append({key: row[key] for key in ('id', 'question', 'status', 'deleted_at')})
+    return usage
+
+
+def rename_attachment(notebook_id: str, attachment_id: str, name: str) -> bool:
+    # Historical exchanges keep their submitted filename snapshot.
+    with connection() as conn:
+        return conn.execute('UPDATE question_images SET name=? WHERE id=? AND notebook_id=?',
+                            (name, attachment_id, notebook_id)).rowcount == 1
+
+
+def remove_unused_attachment(notebook_id: str, attachment_id: str) -> str | None:
+    with connection() as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        row = conn.execute('SELECT path FROM question_images WHERE id=? AND notebook_id=?',
+                           (attachment_id, notebook_id)).fetchone()
+        if row is None:
+            return None
+        for record in conn.execute('SELECT images_json FROM chat_exchanges WHERE notebook_id=?', (notebook_id,)):
+            if any(item['id'] == attachment_id for item in json.loads(record['images_json'])):
+                raise ValueError('附件仍被对话或最近五条删除记录引用，暂不能永久删除。')
+        conn.execute('DELETE FROM question_images WHERE id=? AND notebook_id=?', (attachment_id, notebook_id))
+        return row['path']

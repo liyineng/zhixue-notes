@@ -170,6 +170,7 @@
               <small>附件仅随本次问题发送，不加入来源库。公式、图表请校对文字或配置图片识别模型。</small>
             </section>
           <form id="ask-form" class="composer">
+            <div class="attachment-library-toolbar"><span>问题附件</span><button id="manage-question-attachments" class="button ghost" type="button">附件管理</button></div>
             <div id="reply-draft" class="reply-draft" hidden><div><strong>引用回答追问</strong><p id="reply-preview"></p></div><button id="remove-reply" type="button" class="icon-button" aria-label="移除引用回答">×</button></div>
             <input id="question-image-input" type="file" accept=".pdf,.pptx,.docx,.md,.markdown,.txt,.png,.jpg,.jpeg,.webp" multiple hidden />
             <textarea
@@ -240,6 +241,14 @@
         </section>
       </main>
     </div>
+
+    <dialog id="attachments-dialog" class="settings-dialog attachments-dialog" aria-labelledby="attachments-title">
+      <div class="dialog-heading"><div><h2 id="attachments-title">问题附件</h2><p>独立管理输入框上传的资料，不加入课程来源库。</p></div><button id="close-attachments" class="icon-button" type="button" aria-label="关闭附件管理">×</button></div>
+      <label class="attachment-search-label"><span>查找附件</span><input id="managed-attachment-search" type="search" placeholder="按文件名查找" /></label>
+      <p id="managed-attachment-status" class="attachment-meta" role="status"></p>
+      <div id="managed-attachment-list" class="managed-attachment-list"></div>
+      <p class="attachment-retention-note">已用于对话的附件会随对话保留；最近五条删除记录也会保留附件，供撤销恢复。</p>
+    </dialog>
 
     <dialog id="sync-dialog" class="settings-dialog sync-dialog" aria-labelledby="sync-title">
       <div class="dialog-heading">
