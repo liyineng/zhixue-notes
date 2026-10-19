@@ -162,11 +162,20 @@ function setBusy(busy) {
   updateCancelButton();
 }
 
+function rememberNotebook() {
+  localStorage.setItem('zhixue-notebook', state.notebookId);
+  const url = new URL(location.href);
+  if (url.searchParams.has('notebook_id') && url.searchParams.get('notebook_id') !== state.notebookId) {
+    url.searchParams.set('notebook_id', state.notebookId);
+    history.replaceState(history.state, '', url);
+  }
+}
+
 async function loadNotebooks() {
   const { notebooks } = await api("/api/notebooks");
   state.notebooks = notebooks;
   if (!notebooks.some((n) => n.id === state.notebookId)) state.notebookId = notebooks[0]?.id || "default";
-  localStorage.setItem("zhixue-notebook", state.notebookId);
+  rememberNotebook();
   ui["notebook-select"].replaceChildren();
   for (const notebook of notebooks) {
     const option = new Option(`${notebook.name} (${notebook.document_count})`, notebook.id);
@@ -189,7 +198,7 @@ async function switchNotebook(id) {
   state.pendingExchangeId = null;
   state.pendingExchange = null;
   renderReplyDraft();
-  localStorage.setItem("zhixue-notebook", id);
+  rememberNotebook();
   state.selectedSources.clear();
   state.documents = [];
   state.notes = [];
