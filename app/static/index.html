@@ -82,7 +82,7 @@
           </div>
         </div>
 
-        <input id="file-input" type="file" multiple hidden accept=".pdf,.md,.markdown,.txt,.docx,.pptx" />
+        <input id="file-input" type="file" multiple hidden accept=".pdf,.md,.markdown,.txt,.docx,.pptx,.png,.jpg,.jpeg,.webp" />
         <div class="sidebar-toolbar">
           <button id="upload-button" class="button primary" type="button">
             <svg class="icon"><use href="#i-upload"></use></svg>
@@ -97,7 +97,7 @@
 
         <button id="dropzone" class="dropzone" type="button">
           <svg class="icon"><use href="#i-upload"></use></svg>
-          <span>拖拽 PDF、PPTX、DOCX 或 Markdown</span>
+          <span>拖拽 PDF、课件、文档或图片</span>
         </button>
 
         <div class="library-tabs" role="tablist" aria-label="笔记本内容">
@@ -165,7 +165,7 @@
           </div>
           <form id="ask-form" class="composer">
             <div id="reply-draft" class="reply-draft" hidden><div><strong>引用回答追问</strong><p id="reply-preview"></p></div><button id="remove-reply" type="button" class="icon-button" aria-label="移除引用回答">×</button></div>
-            <input id="question-image-input" type="file" accept="image/png,image/jpeg,image/webp" multiple hidden />
+            <input id="question-image-input" type="file" accept=".pdf,.pptx,.docx,.md,.markdown,.txt,.png,.jpg,.jpeg,.webp" multiple hidden />
             <div id="question-image-draft" class="question-image-draft" hidden>
               <div id="question-image-list" class="question-image-list"></div>
               <details><summary>题目文字（可校对）</summary><textarea id="question-image-text" rows="4" maxlength="20000" placeholder="OCR 未识别清楚时，可在这里填写或更正题目。"></textarea></details>
@@ -178,7 +178,7 @@
               maxlength="4000"
             ></textarea>
             <div class="composer-actions">
-            <button id="attach-question-image" class="icon-button" type="button" aria-label="上传题目图片" title="上传题目图片，也可粘贴截图">图片</button>
+            <button id="attach-question-image" class="icon-button" type="button" aria-label="上传资料" title="支持 PDF、PPTX、DOCX、Markdown、TXT 和 PNG、JPG、WebP 图片，也可拖入文件或粘贴截图。文档加入当前笔记本，图片随问题发送。">上传资料</button>
             <button id="send-button" class="send-button" type="submit" aria-label="发送问题">
               <svg class="icon"><use href="#i-send"></use></svg>
             </button>

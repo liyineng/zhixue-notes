@@ -360,24 +360,51 @@ async function uploadFiles(files) {
   const accepted = [...files];
   if (!accepted.length) return;
   if (state.busy) return showToast("请等待当前操作完成。");
+  const imageSuffixes = new Set(['png', 'jpg', 'jpeg', 'webp']);
+  const documentSuffixes = new Set(['pdf', 'pptx', 'docx', 'md', 'markdown', 'txt']);
+  const isImage = file => imageSuffixes.has(file.name.split('.').pop().toLowerCase());
+  const images = accepted.filter(isImage);
+  const invalid = accepted.find(file => !isImage(file) && !documentSuffixes.has(file.name.split('.').pop().toLowerCase()));
+  const clearInputs = () => { dom.fileInput.value = ''; ui['question-image-input'].value = ''; };
+  let validationError;
+  if (invalid) validationError = `不支持 ${invalid.name}，请选择 PDF、PPTX、DOCX、Markdown、TXT 或 PNG、JPG、WebP 图片。`;
+  else if (state.draftImages.length + images.length > 3) validationError = '每次最多附带 3 张题目图片，文档数量不受此限制。';
+  else if (images.some(file => file.size > 10 * 1024 * 1024)) validationError = '每张题目图片最多 10 MB。';
+  if (validationError) { clearInputs(); return showToast(validationError, true); }
+  if (images.length && state.imageTextEdited && !window.confirm('添加图片会重置校对文字，继续？')) { clearInputs(); return; }
+  let imported = 0, attached = 0, failure = null;
+  const unreadPages = [];
   setBusy(true);
   try {
     for (const file of accepted) {
-      showToast(`正在解析：${file.name}`);
       const body = new FormData();
       body.append("file", file);
-      const data = await api(`/api/documents?notebook_id=${encodeURIComponent(state.notebookId)}`, { method: "POST", body });
-      const unread = data.unread_image_pages?.flatMap((item) => item.pages) || [];
-      showToast(`已导入：${data.document.name}${unread.length ? `；第 ${unread.join('、')} 页图片未成功识别` : ''}`, Boolean(unread.length));
+      if (isImage(file)) {
+        showToast(`正在识别题目：${file.name}`);
+        const data = await api(`/api/question-images?notebook_id=${encodeURIComponent(state.notebookId)}`, { method: 'POST', body });
+        state.draftImages.push(data.image);
+        attached++;
+      } else {
+        showToast(`正在解析：${file.name}`);
+        const data = await api(`/api/documents?notebook_id=${encodeURIComponent(state.notebookId)}`, { method: 'POST', body });
+        imported++;
+        const unread = data.unread_image_pages?.flatMap(item => item.pages) || [];
+        if (unread.length) unreadPages.push(`${data.document.name}：第 ${unread.join('、')} 页图片未成功识别`);
+      }
     }
-    await loadDocuments();
-    await loadNotebooks();
   } catch (error) {
-    showToast(error.message, true);
+    failure = error.message;
   } finally {
+    // Refresh successful imports even if a later file fails; keep image drafts.
+    try {
+      if (imported) { await loadDocuments(); await loadNotebooks(); }
+    } catch (error) { failure ||= error.message; }
+    if (attached) renderDraftImages();
     setBusy(false);
-    dom.fileInput.value = "";
+    clearInputs();
   }
+  const completed = [imported && `已导入 ${imported} 份资料并选为来源`, attached && `已添加 ${attached} 张题目图片，可发送或校对文字`].filter(Boolean).join('；');
+  showToast([completed, ...unreadPages, failure].filter(Boolean).join('；'), Boolean(failure || unreadPages.length));
 }
 
 function resetViewer() {
@@ -1039,40 +1066,21 @@ function renderDraftImages() {
 }
 
 async function attachQuestionImages(files) {
-  if (state.busy) return showToast("请等待当前操作完成。");
-  if (state.draftImages.length + files.length > 3) return showToast("每次最多上传 3 张题目图片。", true);
-  if (state.imageTextEdited && !window.confirm("更换图片会重置校对文字，继续？")) return;
-  setBusy(true);
-  try {
-    for (const file of files) {
-      if (file.size > 10 * 1024 * 1024) throw new Error("每张题目图片最多 10 MB。");
-      showToast(`正在识别题目：${file.name}`);
-      const body = new FormData();
-      body.append("file", file);
-      const data = await api(`/api/question-images?notebook_id=${encodeURIComponent(state.notebookId)}`, { method: "POST", body });
-      state.draftImages.push(data.image);
-    }
-    showToast("图片已添加，可直接发送或展开校对题目文字。");
-  } catch (error) { showToast(error.message, true); }
-  finally {
-    renderDraftImages();
-    ui["question-image-input"].value = "";
-    setBusy(false);
-  }
+  return uploadFiles(files);
 }
 
 ui["attach-question-image"].addEventListener("click", () => ui["question-image-input"].click());
 ui["question-image-input"].addEventListener("change", (event) => attachQuestionImages([...event.target.files]));
 ui["question-image-text"].addEventListener("input", () => { state.imageTextEdited = true; });
 dom.questionInput.addEventListener("paste", (event) => {
-  const images = [...(event.clipboardData?.files || [])].filter((file) => file.type.startsWith("image/"));
-  if (images.length) { event.preventDefault(); attachQuestionImages(images); }
+  const files = [...(event.clipboardData?.files || [])];
+  if (files.length) { event.preventDefault(); uploadFiles(files); }
 });
 dom.askForm.addEventListener("dragover", (event) => event.preventDefault());
 dom.askForm.addEventListener("drop", (event) => {
   event.preventDefault();
-  const images = [...(event.dataTransfer?.files || [])].filter((file) => file.type.startsWith("image/"));
-  if (images.length) attachQuestionImages(images);
+  const files = [...(event.dataTransfer?.files || [])];
+  if (files.length) uploadFiles(files);
 });
 
 async function askQuestion(question) {
