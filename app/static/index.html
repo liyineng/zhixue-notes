@@ -163,14 +163,15 @@
               </div>
             </div>
           </div>
-          <form id="ask-form" class="composer">
-            <div id="reply-draft" class="reply-draft" hidden><div><strong>引用回答追问</strong><p id="reply-preview"></p></div><button id="remove-reply" type="button" class="icon-button" aria-label="移除引用回答">×</button></div>
-            <input id="question-image-input" type="file" accept=".pdf,.pptx,.docx,.md,.markdown,.txt,.png,.jpg,.jpeg,.webp" multiple hidden />
-            <div id="question-image-draft" class="question-image-draft" hidden>
+            <section id="question-image-draft" class="question-image-draft" aria-label="本次问题附件" hidden>
+              <div class="attachment-heading"><strong>本次问题附件</strong><span id="question-attachment-count" role="status"></span></div>
               <div id="question-image-list" class="question-image-list"></div>
               <details><summary>附件文字（可校对）</summary><textarea id="question-image-text" rows="4" maxlength="20000" placeholder="可在这里填写或更正附件中的题目文字。"></textarea></details>
               <small>附件仅随本次问题发送，不加入来源库。公式、图表请校对文字或配置图片识别模型。</small>
-            </div>
+            </section>
+          <form id="ask-form" class="composer">
+            <div id="reply-draft" class="reply-draft" hidden><div><strong>引用回答追问</strong><p id="reply-preview"></p></div><button id="remove-reply" type="button" class="icon-button" aria-label="移除引用回答">×</button></div>
+            <input id="question-image-input" type="file" accept=".pdf,.pptx,.docx,.md,.markdown,.txt,.png,.jpg,.jpeg,.webp" multiple hidden />
             <textarea
               id="question-input"
               rows="2"

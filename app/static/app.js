@@ -1053,6 +1053,7 @@ function addRecognizedText(article, text, mode) {
 
 function renderDraftImages() {
   ui["question-image-draft"].hidden = !state.draftImages.length;
+  document.getElementById('question-attachment-count').textContent = `${state.draftImages.length} 个附件`;
   ui["question-image-list"].replaceChildren();
   state.imageTextEdited = false;
   ui["question-image-text"].value = state.draftImages.map((image) => image.ocr_text || "").join("\n\n").slice(0, 20000);
@@ -1066,7 +1067,8 @@ function renderDraftImages() {
       preview.textContent = image.name; preview.title = image.name;
     } else { preview.src = image.url; preview.alt = image.name; }
     const name = document.createElement("span");
-    name.textContent = image.name;
+    name.textContent = image.kind === 'document' ? `${image.name.split('.').pop().toUpperCase()} · 问题附件` : image.name;
+    name.title = image.name;
     const remove = document.createElement("button");
     remove.type = "button";
     remove.className = "draft-remove";
@@ -1097,12 +1099,14 @@ dom.questionInput.addEventListener("paste", (event) => {
   const files = [...(event.clipboardData?.files || [])];
   if (files.length) { event.preventDefault(); uploadFiles(files, true); }
 });
-dom.askForm.addEventListener("dragover", (event) => event.preventDefault());
-dom.askForm.addEventListener("drop", (event) => {
-  event.preventDefault();
-  const files = [...(event.dataTransfer?.files || [])];
-  if (files.length) uploadFiles(files, true);
-});
+for (const target of [dom.askForm, ui['question-image-draft']]) {
+  target.addEventListener('dragover', event => event.preventDefault());
+  target.addEventListener('drop', event => {
+    event.preventDefault();
+    const files = [...(event.dataTransfer?.files || [])];
+    if (files.length) uploadFiles(files, true);
+  });
+}
 
 async function askQuestion(question) {
   const text = question.trim();

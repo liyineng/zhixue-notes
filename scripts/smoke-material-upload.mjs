@@ -97,16 +97,24 @@ try {
   await page.locator('#question-input').fill('结合资料解答图片中的题目');
   await fs.mkdir('artifacts/material-upload', { recursive: true });
   await page.screenshot({ path: 'artifacts/material-upload/desktop.png' });
+  assert.equal(await page.locator('#question-attachment-count').innerText(), '9 个附件');
+  assert(await page.locator('#question-image-list').evaluate(e => e.scrollWidth > e.clientWidth));
   for (const width of [320, 390]) {
     await page.setViewportSize({ width, height: 844 });
     const button = await page.locator('#attach-question-image').boundingBox();
     assert(button.x >= 0 && button.x + button.width <= width);
     assert(await page.locator('#attach-question-image').evaluate(e => e.scrollWidth <= e.clientWidth));
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+    const tray = await page.locator('#question-image-draft').boundingBox();
+    const input = await page.locator('#question-input').boundingBox();
+    assert(tray.y + tray.height <= input.y, 'attachments must stay above question input');
+    assert(input.y + input.height <= 844, 'attachment tray must not push input off screen');
+    assert(tray.height <= 260, 'multiple attachments must stay compact');
   }
   await page.screenshot({ path: 'artifacts/material-upload/mobile.png' });
   await page.locator('#question-input').press('Enter');
   await page.locator('.message.assistant').filter({ hasText: '联合问答成功' }).waitFor();
+  assert.equal(await page.locator('#question-image-draft').isVisible(), false);
   assert.deepEqual(asked.document_ids, docs.filter(d => d.id !== 'old').map(d => d.id));
   assert.deepEqual(asked.image_ids, attachments.map(item => item.id));
   assert.equal(asked.notebook_id, 'default');
