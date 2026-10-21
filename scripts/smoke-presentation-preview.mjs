@@ -79,6 +79,19 @@ try {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.screenshot({ path: path.join(output, 'fallback-mobile.png') });
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+  // A previous text fallback must not hide a later, successfully loaded citation.
+  // Check actual visibility as a rendered canvas can still sit under display:none.
+  await page.setViewportSize({ width: 1440, height: 960 });
+  fail = false;
+  await page.locator('#messages .citation-ref').nth(2).click();
+  await page.waitForFunction(() => document.querySelector('#page-total').textContent === '/ 2'
+    && document.querySelector('#page-input').value === '2'
+    && document.querySelector('#pdf-canvas').width > 0);
+  assert.equal(await page.locator('#viewer-stage').isVisible(), true, 'Recovered citation must show its original page after a text fallback');
+  assert.equal(await page.locator('#pdf-canvas').isVisible(), true);
+  assert.equal(await page.locator('#viewer-document').evaluate(el => el.classList.contains('is-text')), false);
+  await page.locator('.highlight-box[data-citations="1,2"]').waitFor();
+  await page.screenshot({ path: path.join(output, 'fallback-recovered.png') });
   assert.deepEqual(errors, []);
-  console.log('PPT preview, paging, converter fallback, original download and mobile layout passed.');
+  console.log('PPT preview, paging, converter fallback, recovery through a later citation, original download and mobile layout passed.');
 } finally { await browser.close(); }

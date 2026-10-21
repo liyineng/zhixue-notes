@@ -505,6 +505,7 @@ async function openPdf(documentId, pageNumber, lines = [], references = []) {
     showToast("找不到对应资料。", true);
     return;
   }
+  document.getElementById('viewer-document').classList.remove('is-text');
   state.highlightLines = lines || [];
   state.previewCitations = doc.kind === 'pptx' ? references : [];
   state.viewerDocumentId = documentId;
