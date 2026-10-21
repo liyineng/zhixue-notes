@@ -10,7 +10,7 @@ from PIL import Image
 
 import test_workspace
 from app import db, main
-from app.llm import answer_question, uses_original_question_images
+from app.llm import answer_question, uses_original_question_images, CompletionLimitError
 
 
 class VisualAnswerPayloadTests(unittest.TestCase):
@@ -77,3 +77,16 @@ class VisualAnswerPipelineTests(unittest.TestCase):
         saved = db.get_exchange(notebook, response.json()['chat_id'])
         self.assertEqual(saved['result']['image_answer_mode'], 'original')
         self.assertEqual(saved['images'][0]['id'], image_id)
+        # Failed model output retains completed recognition and safe diagnostics.
+        error = CompletionLimitError([32768, 65536], {'usage': {'completion_tokens': 65536}}, thinking=True)
+        with patch.object(main, 'analyze_question', AsyncMock(return_value=plan)), \
+             patch.object(main, 'read_question', AsyncMock(return_value=('已经读取的节点表', 'vision'))), \
+             patch.object(main, 'answer_question', AsyncMock(side_effect=error)):
+            failed = self.client.post('/api/ask', json={'notebook_id': notebook, 'document_ids': [],
+                'image_ids': [image_id], 'question': '重新核对题图'})
+        self.assertEqual(failed.status_code, 502)
+        identity = failed.headers['X-Chat-Id']
+        result = db.get_exchange(notebook, identity)['result']
+        self.assertEqual(result['image_question_text'], '已经读取的节点表')
+        self.assertEqual(result['image_answer_mode'], 'original')
+        self.assertEqual(result['model_response']['attempted_output_budgets'], [32768, 65536])

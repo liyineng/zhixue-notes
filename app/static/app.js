@@ -1404,8 +1404,17 @@ function setMobilePane(pane) {
   dom.workspace.dispatchEvent(new Event('panelschange'));
 }
 
+function renderOutputBudget(settings) {
+  const budget = settings.answer_output_budget, help = document.getElementById('output-budget-help');
+  if (!budget || !settings.model_configured) { help.textContent = '输出额度受模型接口限制；推理模型的思考与正文可能共用额度。'; return; }
+  help.textContent = budget.includes_reasoning
+    ? `思考与正文共用输出额度：起始 ${budget.initial} tokens${budget.retry > budget.initial ? `，截断时最多重试一次到 ${budget.retry}` : '，已受模型或上下文额度限制'}。`
+    : `当前解题输出额度 ${budget.initial} tokens，模型接口可能另有限制。`;
+}
+
 async function loadSettings() {
   state.settings = await api("/api/settings");
+  renderOutputBudget(state.settings);
   const configured = Boolean(state.settings.model_configured);
   dom.modelPill.textContent = configured
     ? `模型：${state.settings.model}`
@@ -1466,6 +1475,7 @@ async function saveSettings(event) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     });
+    renderOutputBudget(state.settings);
     dom.settingsDialog.close();
     await loadSettings();
     showToast("模型设置已保存。");

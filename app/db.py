@@ -412,6 +412,16 @@ def set_generation_progress(exchange_id: str, stage: str, label: str, detail: st
                      (json.dumps(result, ensure_ascii=False), exchange_id))
 
 
+def set_generation_metadata(exchange_id: str, fields: dict[str, Any]) -> None:
+    with connection() as conn:
+        row = conn.execute("SELECT result_json FROM chat_exchanges WHERE id=? AND status='pending'", (exchange_id,)).fetchone()
+        if row is None:
+            return
+        result = json.loads(row[0]); result.update(fields)
+        conn.execute("UPDATE chat_exchanges SET result_json=? WHERE id=? AND status='pending'",
+                     (json.dumps(result, ensure_ascii=False), exchange_id))
+
+
 def get_exchange(notebook_id: str, exchange_id: str) -> dict[str, Any] | None:
     with connection() as conn:
         row = conn.execute("SELECT * FROM chat_exchanges WHERE notebook_id=? AND id=? AND deleted_at IS NULL",

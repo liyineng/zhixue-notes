@@ -79,10 +79,29 @@ def source_reserve(documents):
 
 
 def history_budget(info, settings, current_text, evidence_reserve=0):
-    deepseek = urlparse(str(settings.get('base_url', ''))).hostname == 'api.deepseek.com'
-    output = max(16384 if deepseek else 1800, int(settings.get('max_tokens') or 1400))
+    output = max(1800, answer_output_budgets(settings)[1])
     if info.get('max_output_tokens'):
         output = min(output, info['max_output_tokens'])
     # Leave room for system instructions, message framing, retrieval candidates
     # and the current question; only history is dropped when space is exhausted.
     return max(0, info['context_window'] - output - evidence_reserve - estimate_tokens(current_text) - 8192)
+
+
+def answer_output_budgets(settings):
+    """Initial/retry total output budgets; thinking and final text share tokens.
+
+    Automatic expansion is bounded at 64K. Higher manually selected budgets are
+    respected, never reduced to that retry bound. Provider-declared limits win.
+    """
+    configured = int(settings.get('max_tokens') or 1400)
+    deepseek = urlparse(str(settings.get('base_url', ''))).hostname == 'api.deepseek.com'
+    initial = max(32768, configured) if deepseek else configured
+    ceiling = max(65536, initial) if deepseek else initial
+    info = context_info(settings)
+    provider_info = context_info({**settings, 'context_window': 0}) if settings.get('context_window') else info
+    if provider_info.get('max_output_tokens'):
+        ceiling = min(ceiling, provider_info['max_output_tokens'])
+    if info.get('context_window') and info.get('source') != 'fallback':
+        ceiling = min(ceiling, max(128, info['context_window'] - 8192))
+    initial = min(initial, ceiling)
+    return initial, min(ceiling, initial * 2) if deepseek else initial

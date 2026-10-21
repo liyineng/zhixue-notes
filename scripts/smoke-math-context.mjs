@@ -24,7 +24,7 @@ try {
       if(p==='/api/notebooks') data={notebooks:[{id:'default',name:'公式验收',document_count:0}]};
       else if(p==='/api/documents') data={documents:[]};
       else if(p==='/api/notes') data={notes:[]};
-      else if(p==='/api/settings') data={model_configured:true,model:'mock',context_window:0,model_context:{context_window:1048576,source:'provider_api'}};
+      else if(p==='/api/settings') data={model_configured:true,model:'mock',context_window:0,model_context:{context_window:1048576,source:'provider_api'},answer_output_budget:{initial:32768,retry:65536,includes_reasoning:true}};
       else if(p==='/api/model-context') data={context_window:128000,source:'provider_api'};
       else if(p==='/api/sync') data={enabled:false,available:false,conflicts:[]};
       else if(p==='/api/notebooks/default/chat') data={exchanges:[{id:'math-test',question:'公式',status:'complete',images:[],reply_to:{},result:{answer,citations:[{index:1,document_id:'source',document_name:'课程',page:1,text:'依据'}]}}],deleted_count:0};
@@ -43,6 +43,8 @@ try {
     assert.equal(await page.locator('.answer-math').first().getAttribute('tabindex'),'0');
     assert.match(await page.locator('#model-context-status').textContent(),/1,048,576/);
     assert.equal(await page.locator('#top-k').inputValue(),'6');
+    assert.equal(await page.locator('#max-tokens').getAttribute('max'),'393216');
+    assert.match(await page.locator('#output-budget-help').textContent(),/32768.*65536/);
     assert.equal(await page.locator('#top-k').getAttribute('min'),'0');
     assert.match(await page.locator('#top-k').locator('..').textContent(),/0 为全部/);
     // Settings controls can be exercised without opening or changing saved data.

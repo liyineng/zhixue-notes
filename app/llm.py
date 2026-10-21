@@ -11,7 +11,7 @@ from urllib.parse import urlparse
 import httpx
 
 from .retrieval import excerpt, quoted_evidence
-from .model_context import context_info, history_budget, estimate_tokens
+from .model_context import context_info, history_budget, estimate_tokens, answer_output_budgets
 
 PLANNER_SYSTEM_PROMPT = """你是课程资料学习助手的检索规划器。
 分析用户输入，只返回一个 JSON 对象，不要使用代码块，不要添加解释。
@@ -222,6 +222,17 @@ def _extract_json(text: str) -> dict[str, Any] | None:
     return data if isinstance(data, dict) else None
 
 
+class CompletionLimitError(RuntimeError):
+    def __init__(self, budgets: list[int], response: dict, *, thinking: bool):
+        super().__init__('模型输出达到长度上限，已尝试 ' + ' → '.join(map(str, budgets))
+                         + (' tokens（思考与答案共用）' if thinking else ' tokens')
+                         + '。未接收截断答案，请缩小本次任务或提高模型设置中的输出长度。')
+        usage = response.get('usage') or {}
+        self.diagnostics = {'finish_reason': 'length', 'attempted_output_budgets': budgets,
+                            'usage': {key: usage[key] for key in ('prompt_tokens', 'completion_tokens', 'total_tokens')
+                                      if type(usage.get(key)) is int}}
+
+
 async def chat_completion(
     *,
     base_url: str,
@@ -232,6 +243,7 @@ async def chat_completion(
     max_tokens: int,
     thinking: bool | None = None,
     json_mode: bool = False,
+    reasoning_retry_tokens: int | None = None,
 ) -> str:
     headers = {"Content-Type": "application/json"}
     if api_key.strip():
@@ -243,6 +255,7 @@ async def chat_completion(
         "max_tokens": max_tokens,
     }
     deepseek = urlparse(base_url).hostname == "api.deepseek.com"
+    attempted_budgets = []
     if json_mode and deepseek:
         payload['response_format'] = {'type': 'json_object'}
     if deepseek and thinking is not None:
@@ -253,6 +266,7 @@ async def chat_completion(
         async def request() -> httpx.Response:
             for attempt in range(2):
                 try:
+                    attempted_budgets.append(payload['max_tokens'])
                     response = await client.post(_endpoint(base_url), headers=headers, json=payload)
                 except httpx.TimeoutException as exc:
                     if attempt:
@@ -276,7 +290,11 @@ async def chat_completion(
                 # Thinking tokens share the output budget. Preserve reasoning for
                 # problem solving; short extraction tasks can retry without it.
                 if thinking is True:
-                    payload["max_tokens"] = min(16384, max(8192, max_tokens * 2))
+                    _, retry_budget = answer_output_budgets({'base_url': base_url, 'model': model,
+                                                            'api_key': api_key, 'max_tokens': max_tokens})
+                    if reasoning_retry_tokens is not None:
+                        retry_budget = reasoning_retry_tokens
+                    payload["max_tokens"] = max(max_tokens, retry_budget)
                 else:
                     payload["thinking"] = {"type": "disabled"}
                 response = await request()
@@ -298,7 +316,7 @@ async def chat_completion(
         )
     content = str(content or "").strip()
     if data["choices"][0].get("finish_reason") == "length":
-        raise RuntimeError("模型输出达到长度上限，未完整返回结果。请在模型设置中提高最大输出长度后重试。")
+        raise CompletionLimitError(attempted_budgets, data, thinking=payload.get('thinking', {}).get('type') == 'enabled')
     if not content:
         raise RuntimeError("模型接口返回了空的正文，请重试；若持续出现，请检查模型或服务商状态。")
     return content
@@ -431,14 +449,16 @@ async def answer_question(
         },
     ]
     deepseek = urlparse(str(settings["base_url"])).hostname == "api.deepseek.com"
+    initial_output, retry_output = answer_output_budgets(settings)
     return await chat_completion(
         base_url=str(settings["base_url"]),
         api_key=str(settings.get("api_key", "")),
         model=str(settings["model"]),
         messages=messages,
         temperature=float(settings.get("temperature", 0.2)),
-        max_tokens=max(8192, int(settings.get("max_tokens", 1400))) if deepseek else int(settings.get("max_tokens", 1400)),
+        max_tokens=initial_output,
         thinking=True if deepseek else None,
+        reasoning_retry_tokens=retry_output if deepseek else None,
     )
 
 
