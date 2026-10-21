@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import asyncio
 import re
+import base64
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
@@ -55,6 +57,8 @@ ANSWER_SYSTEM_PROMPT += """
 14. 近期对话和被引用的旧回答只帮助理解指代，不是资料依据。旧回答可能有误，应核对并纠正；历史引用编号不能充当本次引用。优先回答本次问题，换话题时不要延续无关旧主题。
 15. 资料引用严格使用半角方括号 [1]，不要写成【1】。公式使用 LaTeX 的 \\( ... \\) 或 \\[ ... \\]，不要把公式放进代码块。
 16. 长公式使用 aligned 环境分行，一行只表达一步；较长中文解释放在正文，不要堆在数学下标里。题干没有给出的初始窗口等条件不能当作默认事实，必须明确假设或分情况回答。
+17. 电路、拓扑和几何题先核对原图的节点、端子、抽头、交叉线与连接点及元件标号，再应用资料原理。机器转写可能漏连线或读错标号；有原图时按图核验，不得把转写错误当成已知。无法确定的连接须明确指出，不可补猜后给唯一结论。
+18. 电路未单独画出某支路或元件不等于它不存在。区分显式元件、器件极间电容等隐含参数，以及题目是否允许忽略它们；结论依赖这些参数时分条件说明。不要对未确认的等效电路继续推导精确公式。
 """
 
 SUMMARY_PROMPT = """你是课程资料学习助手。请仅依据用户提供的“资料片段”，生成复习材料。
@@ -376,12 +380,24 @@ def extractive_answer(contexts: list[dict[str, Any]], question: str = "") -> str
     return "\n".join(lines)
 
 
+def uses_original_question_images(settings: dict[str, Any]) -> bool:
+    """Only reuse a model explicitly configured for vision on this same endpoint.
+
+    Never send pictures or the vision provider's key to an unconfigured chat model.
+    """
+    vision_base = str(settings.get('vision_base_url') or settings.get('base_url') or '')
+    return bool(settings.get('vision_model') and settings.get('base_url')
+                and settings.get('vision_model') == settings.get('model')
+                and _endpoint(vision_base) == _endpoint(str(settings['base_url'])))
+
+
 async def answer_question(
     question: str,
     contexts: list[dict[str, Any]],
     settings: dict[str, Any],
     document_names: list[str] | None = None,
     needs_retrieval: bool = True,
+    *, images: list[dict[str, Any]] | None = None,
 ) -> str:
     if not model_configured(settings):
         return extractive_answer(contexts, question)
@@ -399,16 +415,19 @@ async def answer_question(
             "已完成资料检索，但没有找到相关片段。"
             "如果使用通用知识回答，必须用“【通用知识补充】”标明。"
         )
+    content = (f"上传资料名称：{names}\n\n{retrieval_section}\n\n用户输入：{question}\n\n请根据上述规则回答。")
+    pictures = [image for image in images or [] if Path(image['path']).suffix.lower() == '.png']
+    if pictures and uses_original_question_images(settings):
+        content = [{'type': 'text', 'text': content + '\n附图是本次题目原图。识别文字只作辅助，用户明确校对的内容优先；解题前请重新核对各子图的真实连接及标号，模糊原图不得覆盖用户的明确更正；资料引用仍只来自上面的资料片段。'}] + [
+            {'type': 'image_url', 'image_url': {'url': 'data:image/png;base64,' + base64.b64encode(Path(image['path']).read_bytes()).decode('ascii')}}
+            for image in pictures]
+    elif pictures:
+        content += '\n本次解题模型只收到识别转写，未收到原图。不要声称已核对原图；电路或图形的连接关系不清时须指出并请用户校对，不得补猜。'
     messages = [
         {"role": "system", "content": ANSWER_SYSTEM_PROMPT},
         {
             "role": "user",
-            "content": (
-                f"上传资料名称：{names}\n\n"
-                f"{retrieval_section}\n\n"
-                f"用户输入：{question}\n\n"
-                "请根据上述规则回答。"
-            ),
+            "content": content,
         },
     ]
     deepseek = urlparse(str(settings["base_url"])).hostname == "api.deepseek.com"

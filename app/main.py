@@ -36,7 +36,7 @@ from .config import (
     QUESTION_IMAGE_DIR,
     ensure_directories,
 )
-from .llm import analyze_question, answer_question, make_summary, model_configured, select_evidence, cited_sources
+from .llm import analyze_question, answer_question, make_summary, model_configured, select_evidence, cited_sources, uses_original_question_images
 from .parsers import UnsupportedDocument, parse_document
 from .retrieval import BM25Index, excerpt, focus_source, page_sources, summary_documents, named_question_documents, exercise_sources, is_exercise_question, is_formula_inventory
 from .question_images import MAX_IMAGE_BYTES, normalize_image, local_ocr, read_question
@@ -1083,8 +1083,9 @@ async def _ask(payload: AskRequest, exchange_id: str, checkpoint_job: dict | Non
                     history, context_turns = shorter_history, retained_turns
                 if estimate_tokens(effective_question) + evidence_size > history_budget(model_context, settings, ''):
                     raise RuntimeError('全部相关片段超出当前模型的上下文容量，请缩小勾选来源范围或检查模型上下文设置。')
+            image_options = {'images': images} if images else {}
             answer = await answer_question(effective_question, contexts, settings,
-                                           document_names, analysis["needs_retrieval"])
+                                           document_names, analysis["needs_retrieval"], **image_options)
         answer, contexts = cited_sources(answer, contexts)
         if coverage is not None:
             coverage.update(summary_coverage_data(coverage, contexts))
@@ -1110,6 +1111,7 @@ async def _ask(payload: AskRequest, exchange_id: str, checkpoint_job: dict | Non
         "elapsed_ms": elapsed_ms,
         "image_question_text": image_text,
         "image_recognition_mode": image_mode,
+        "image_answer_mode": ('original' if uses_original_question_images(settings) else 'transcript') if any(Path(image['path']).suffix.lower() == '.png' for image in images) else '',
         "question_attachment_refs": attachment_followup['references'] if attachment_followup else [],
         "context_turns": context_turns,
         "context_window": model_context['context_window'],
