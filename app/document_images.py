@@ -29,24 +29,40 @@ def presentation_equation_pages(path: Path) -> list[int]:
     """Locate Equation/MathType objects, including objects without text anchors."""
     pages = []
     with zipfile.ZipFile(path) as archive:
-        for name in archive.namelist():
-            match = re.fullmatch(r'ppt/slides/slide(\d+)\.xml', name)
-            if not match:
-                continue
+        # Slide filenames need not match the order after slides have been moved.
+        ordered = []
+        if 'ppt/presentation.xml' in archive.namelist() and 'ppt/_rels/presentation.xml.rels' in archive.namelist():
+            import posixpath
+            relations = {item.attrib['Id']: posixpath.normpath(posixpath.join('ppt', item.attrib['Target'])).lstrip('/')
+                         for item in ElementTree.fromstring(archive.read('ppt/_rels/presentation.xml.rels'))
+                         if not item.attrib.get('TargetMode') == 'External'}
+            presentation = ElementTree.fromstring(archive.read('ppt/presentation.xml'))
+            for item in presentation.iter():
+                if item.tag.rsplit('}', 1)[-1] == 'sldId':
+                    identity = item.attrib.get('{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id')
+                    if identity in relations:
+                        ordered.append(relations[identity])
+        if not ordered:
+            ordered = sorted((name for name in archive.namelist() if re.fullmatch(r'ppt/slides/slide(\d+)\.xml', name)),
+                             key=lambda name: int(re.search(r'(\d+)\.xml$', name)[1]))
+        for number, name in enumerate(ordered, 1):
             root = ElementTree.fromstring(archive.read(name))
             if any(node.attrib.get('progId', '').lower().startswith(('equation.', 'mathtype'))
-                   for node in root.iter()):
-                pages.append(int(match[1]))
+                   or node.tag.rsplit('}', 1)[-1] in {'oMath', 'oMathPara'} for node in root.iter()):
+                pages.append(number)
     return sorted(pages)
 
 
 async def ensure_presentation_formulas(document: dict[str, Any], settings: dict[str, Any],
-                                       on_page: Callable[[int], None] | None = None) -> dict[str, Any]:
+                                       on_page: Callable[[int], None] | None = None,
+                                       *, pages: list[int] | None = None) -> dict[str, Any]:
     """Read omitted equation objects from real slide images, only for formula inventories."""
     if document['kind'] != 'pptx':
         return {'added_pages': [], 'unread_pages': []}
     async with _locks.setdefault(document['id'], asyncio.Lock()):
         candidates = await run_in_threadpool(presentation_equation_pages, Path(document['path']))
+        if pages is not None:
+            candidates = [page for page in candidates if page in pages]
         existing = db.document_chunk_ids(document['id'])
         pending = [page for page in candidates if f"formulas-v1-{document['id']}-{page}" not in existing]
         if not pending:
@@ -85,14 +101,14 @@ async def ensure_presentation_formulas(document: dict[str, Any], settings: dict[
         return {'added_pages': added, 'unread_pages': unread}
 
 
-def image_regions(path: Path) -> list[dict[str, Any]]:
+def image_regions(path: Path, *, include_mixed: bool = False) -> list[dict[str, Any]]:
     candidates = []
     with pymupdf.open(path) as pdf:
         for number, page in enumerate(pdf, 1):
             blocks = page.get_text('dict')['blocks']
             native = [(pymupdf.Rect(line['bbox']), ''.join(s['text'] for s in line['spans']))
                       for b in blocks if b['type'] == 0 for line in b.get('lines', [])]
-            if sum(len(text.strip()) for _, text in native) >= 40:
+            if not include_mixed and sum(len(text.strip()) for _, text in native) >= 40:
                 continue  # This pass supplements image-only pages, not every illustration.
             images = []
             for b in blocks:
@@ -108,6 +124,22 @@ def image_regions(path: Path) -> list[dict[str, Any]]:
                 candidates.append({'page': number, 'regions': images,
                                    'image_only': sum(len(text.strip()) for _, text in native) < 40})
     return candidates
+
+
+def presentation_image_pages(path: Path) -> list[int]:
+    """Detect substantial slide pictures; this does not assert they contain text."""
+    from pptx import Presentation
+    from pptx.enum.shapes import MSO_SHAPE_TYPE
+    deck = Presentation(str(path))
+    area = deck.slide_width * deck.slide_height
+    def has_picture(shapes):
+        for shape in shapes:
+            if shape.shape_type == MSO_SHAPE_TYPE.GROUP and has_picture(shape.shapes):
+                return True
+            if shape.shape_type == MSO_SHAPE_TYPE.PICTURE and shape.width * shape.height >= area * .015:
+                return True
+        return False
+    return [number for number, slide in enumerate(deck.slides, 1) if has_picture(slide.shapes)]
 
 
 def render_region(path: Path, page: int, bbox: list[float]) -> tuple[bytes, int, int]:
@@ -149,11 +181,26 @@ def ocr_lines(png: bytes, width: int, height: int, page: int, bbox: list[float])
 
 
 async def ensure_image_text(document: dict[str, Any], settings: dict[str, Any],
-                            on_page: Callable[[int], None] | None = None) -> dict[str, Any]:
-    if document['kind'] != 'pdf':
+                            on_page: Callable[[int], None] | None = None,
+                            *, pages: list[int] | None = None) -> dict[str, Any]:
+    if document['kind'] != 'pdf' and not (document['kind'] == 'pptx' and pages is not None):
         return {'added_pages': [], 'unread_pages': []}
     async with _locks.setdefault(document['id'], asyncio.Lock()):
-        candidates = await run_in_threadpool(image_regions, Path(document['path']))
+        path = Path(document['path'])
+        if document['kind'] == 'pptx':
+            selected = [page for page in await run_in_threadpool(presentation_image_pages, path) if page in pages]
+            if not selected:
+                return {'added_pages': [], 'unread_pages': []}
+            try:
+                path = await run_in_threadpool(presentation_pdf, document)
+            except (PreviewError, OSError):
+                return {'added_pages': [], 'unread_pages': selected}
+            with pymupdf.open(path) as pdf:
+                candidates = [{'page': page, 'regions': [list(pdf[page - 1].rect)], 'image_only': True} for page in selected]
+        else:
+            candidates = await run_in_threadpool(image_regions, path, include_mixed=pages is not None)
+            if pages is not None:
+                candidates = [candidate for candidate in candidates if candidate['page'] in pages]
         existing = db.document_chunk_ids(document['id'])
         added, unread = [], []
         for candidate in candidates:
@@ -165,12 +212,12 @@ async def ensure_image_text(document: dict[str, Any], settings: dict[str, Any],
                 on_page(number)
             regions = candidate['regions']
             lines = []
-            if candidate['image_only'] and settings.get('vision_model'):
+            if (candidate['image_only'] or pages is not None) and settings.get('vision_model'):
                 # Render the combined question and diagram so their relationship is retained.
                 rect = pymupdf.Rect(regions[0])
                 for region in regions[1:]: rect |= pymupdf.Rect(region)
                 bbox = list(rect)
-                png, _, _ = await run_in_threadpool(render_region, Path(document['path']), number, bbox)
+                png, _, _ = await run_in_threadpool(render_region, path, number, bbox)
                 try:
                     with tempfile.TemporaryDirectory(prefix='zhixue-page-') as temp:
                         image = Path(temp) / 'page.png'; image.write_bytes(png)
@@ -178,12 +225,13 @@ async def ensure_image_text(document: dict[str, Any], settings: dict[str, Any],
                             instruction='逐字识别这张课件页面的内容，保留题目、已知条件、选项和原有解答。公式转为 LaTeX，'
                             '图表描述数值与结构关系。保留二进制串、上下标和单位；看不清处标为[看不清]，'
                             '不得补猜、改写或额外解题。')
-                    lines = [{'page': number, 'text': text, 'bbox': bbox, 'image_recognition': 'vision'}]
+                    if text.strip() and '[看不清]' not in text:
+                        lines = [{'page': number, 'text': text, 'bbox': bbox, 'image_recognition': 'vision'}]
                 except (RuntimeError, ValueError, OSError, httpx.HTTPError):
                     pass  # Fall back to local OCR; an unread page is reported explicitly below.
             if not lines:
                 for bbox in regions:
-                    png, width, height = await run_in_threadpool(render_region, Path(document['path']), number, bbox)
+                    png, width, height = await run_in_threadpool(render_region, path, number, bbox)
                     lines.extend(await run_in_threadpool(ocr_lines, png, width, height, number, bbox))
             if not lines:
                 unread.append(number)

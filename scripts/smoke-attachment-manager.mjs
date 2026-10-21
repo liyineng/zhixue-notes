@@ -20,6 +20,7 @@ let deletes=0,details=0,sourceWrites=0;
 await page.route('**/api/**',async route=>{
  const request=route.request(),p=new URL(request.url()).pathname,method=request.method();
  const fulfill=json=>route.fulfill({json});
+ if (p === '/api/health') return fulfill({ ok: true, service: 'zhixue-notes' });
  if(p==='/api/settings') return fulfill({model_configured:true,model:'mock'});
  if(p==='/api/sync') return fulfill({enabled:false,available:false,conflicts:[]});
  if(p==='/api/notebooks') return fulfill({notebooks:[{id:'default',name:'附件管理验收',document_count:1}]});

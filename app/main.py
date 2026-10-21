@@ -20,7 +20,7 @@ import httpx
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
-from . import db, generation, cloud_sync
+from . import db, generation, cloud_sync, batch_jobs, document_status
 from .attachment_followups import recover_attachment_problem
 from .quizzes import build_quiz, save_attempt, COUNTS
 from .previews import presentation_pdf, presentation_page_geometry, PreviewError
@@ -61,8 +61,10 @@ def _generation_failure(exchange_id: str, notebook_id: str, exc: Exception) -> s
     steps = progress.get('steps', [])
     if steps:
         detail = f"{steps[-1]['label']}时失败：{detail}"
-    db.finish_pending_exchange(exchange_id, {'detail': detail, 'error_type': type(exc).__name__,
-                                            'failed_progress': progress}, error=True)
+    result = {'detail': detail, 'error_type': type(exc).__name__, 'failed_progress': progress}
+    if (exchange or {}).get('result', {}).get('generation_job'):
+        result['generation_job'] = exchange['result']['generation_job']
+    db.finish_pending_exchange(exchange_id, result, error=True)
     return detail
 
 
@@ -156,6 +158,15 @@ class QuizRequest(BaseModel):
 class QuizAnswerRequest(BaseModel):
     question_id: str = Field(max_length=100)
     option: int = Field(ge=0, le=3, strict=True)
+
+
+class RetryGenerationRequest(BaseModel):
+    request_id: str | None = Field(default=None, max_length=100, pattern=r'^[a-zA-Z0-9_-]+$')
+
+
+class DocumentPagesRequest(BaseModel):
+    notebook_id: str
+    pages: list[int] = Field(min_length=1, max_length=100)
 
 
 class SettingsRequest(BaseModel):
@@ -336,6 +347,7 @@ def health() -> dict[str, Any]:
     settings = db.get_settings()
     return {
         "ok": True,
+        "service": "zhixue-notes",
         "documents": db.document_count(),
         "model_configured": model_configured(settings),
     }
@@ -676,6 +688,34 @@ def document_preview_lines(document_id: str, page: int = Query(ge=1)) -> dict[st
         raise HTTPException(status_code=503, detail=str(error)) from error
 
 
+def _status_document(document_id: str, notebook_id: str) -> dict:
+    _notebook(notebook_id)
+    document = db.get_document(document_id)
+    if not document or document['notebook_id'] != notebook_id:
+        raise HTTPException(status_code=404, detail='资料不存在或不属于当前笔记本。')
+    return document
+
+
+@app.get('/api/documents/{document_id}/status')
+async def document_processing_status(document_id: str, notebook_id: str) -> dict:
+    document = _status_document(document_id, notebook_id)
+    try:
+        return await run_in_threadpool(document_status.inspect_document, document)
+    except (OSError, ValueError, RuntimeError) as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+@app.post('/api/documents/{document_id}/status/retry')
+async def retry_document_processing(document_id: str, payload: DocumentPagesRequest) -> dict:
+    document = _status_document(document_id, payload.notebook_id)
+    try:
+        result = await document_status.retry_document_pages(document, db.get_settings(), payload.pages)
+    except (OSError, ValueError, RuntimeError) as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    _invalidate_index()
+    return result
+
+
 @app.patch("/api/documents/{document_id}")
 def move_document(document_id: str, payload: MoveDocumentRequest) -> dict[str, Any]:
     _notebook(payload.notebook_id)
@@ -833,7 +873,7 @@ async def ask(payload: AskRequest) -> dict[str, Any]:
     return await generation.run(payload.notebook_id, exchange_id, lambda: _ask(payload, exchange_id))
 
 
-async def _ask(payload: AskRequest, exchange_id: str) -> dict[str, Any]:
+async def _ask(payload: AskRequest, exchange_id: str, checkpoint_job: dict | None = None) -> dict[str, Any]:
     settings = db.get_settings()
     model_context = await resolve_context(settings)
     top_k = payload.top_k if payload.top_k is not None else int(settings.get("top_k", 6))
@@ -955,6 +995,8 @@ async def _ask(payload: AskRequest, exchange_id: str) -> dict[str, Any]:
                 if not selected_documents:
                     raise HTTPException(status_code=400, detail="你提到的课件不在当前勾选的来源中，请先勾选该课件。")
                 document_names = [document["name"] for document in selected_documents]
+                batch_jobs.begin(exchange_id, 'ask', {**payload.model_dump(exclude={'request_id'}),
+                                 'document_ids': [doc['id'] for doc in selected_documents]}, checkpoint_job)
                 if formula_inventory:
                     unread = await _ensure_source_images(selected_documents, settings, exchange_id, formulas=True)
                 else:
@@ -1111,6 +1153,7 @@ async def _generate_summary(contexts: list[dict[str, Any]], settings: dict[str, 
     # Formula transcription is much denser than ordinary prose; keep each model
     # request smaller without sampling or dropping any pages.
     batches = summary_batches(contexts, character_limit=8000) if formula_inventory else summary_batches(contexts)
+    checkpoints = batch_jobs.Checkpoints(exchange_id, settings, ['summary', question, formula_inventory], batches)
     answers = []
     for index, batch in enumerate(batches, 1):
         name = batch[0]['document_name']
@@ -1120,13 +1163,17 @@ async def _generate_summary(contexts: list[dict[str, Any]], settings: dict[str, 
         focus = '只列实际公式、符号含义和适用条件，不生成复习提纲，' if formula_inventory else '保留本部分独有的概念、公式、算法、题型与例题，'
         requirement = (question + f'\n本次仅整理《{name}》的所给页面。' + focus +
                        '覆盖开头、中间和末尾；引用只能使用本次页面的编号，不要写其他课件的内容。')
-        if formula_inventory:
+        cached = checkpoints.get(index - 1)
+        if isinstance(cached, str):
+            answer = cached
+        elif formula_inventory:
             answer = await make_summary(batch, settings, question=requirement, formula_inventory=True)
         else:
             answer = await make_summary(batch, settings, question=requirement)
         answer, used = cited_sources(answer, batch, renumber=False)
         if model_configured(settings) and not used:
             raise RuntimeError(f'《{name}》的整理没有提供有效资料引用，无法确认已覆盖该来源，请重新生成。')
+        checkpoints.save(index - 1, answer)
         if len(batches) > 1:
             answer = f"# {' '.join(name.split())}（第 {index}/{len(batches)} 批）\n\n{answer}"
         answers.append(answer)
@@ -1146,7 +1193,7 @@ async def summary(payload: SummaryRequest) -> dict[str, Any]:
     return await generation.run(payload.notebook_id, exchange_id, lambda: _summary(payload, exchange_id))
 
 
-async def _summary(payload: SummaryRequest, exchange_id: str) -> dict[str, Any]:
+async def _summary(payload: SummaryRequest, exchange_id: str, previous: dict | None = None) -> dict[str, Any]:
     settings = db.get_settings()
     selected = _scope(payload.notebook_id, payload.document_ids)
     selected = summary_documents(payload.focus or "", selected)
@@ -1156,6 +1203,7 @@ async def _summary(payload: SummaryRequest, exchange_id: str) -> dict[str, Any]:
     if payload.focus:
         question += f"复习重点：{payload.focus}"
     db.start_exchange(exchange_id, payload.notebook_id or "default", question)
+    batch_jobs.begin(exchange_id, 'summary', {**payload.model_dump(exclude={'request_id'}), 'document_ids': [doc['id'] for doc in selected]}, previous)
     try:
         db.set_generation_progress(exchange_id, 'sources', '检查资料', f'正在检查 {len(selected)} 份资料及图片页识别结果。')
         unread = await _ensure_source_images(selected, settings, exchange_id)
@@ -1198,7 +1246,7 @@ async def create_quiz(payload: QuizRequest) -> dict[str, Any]:
     return await generation.run(payload.notebook_id, exchange_id, lambda: _quiz(payload, exchange_id))
 
 
-async def _quiz(payload: QuizRequest, exchange_id: str) -> dict[str, Any]:
+async def _quiz(payload: QuizRequest, exchange_id: str, previous: dict | None = None) -> dict[str, Any]:
     settings = db.get_settings()
     selected = summary_documents(payload.topic, _scope(payload.notebook_id, payload.document_ids))
     if not selected:
@@ -1209,6 +1257,7 @@ async def _quiz(payload: QuizRequest, exchange_id: str) -> dict[str, Any]:
     if payload.topic:
         question += f'主题：{payload.topic}'
     db.start_exchange(exchange_id, payload.notebook_id, question)
+    batch_jobs.begin(exchange_id, 'quiz', {**payload.model_dump(exclude={'request_id'}), 'document_ids': [doc['id'] for doc in selected]}, previous)
     try:
         unread = await _ensure_source_images(selected, settings, exchange_id)
         contexts = _summary_contexts([d['id'] for d in selected])
@@ -1219,7 +1268,7 @@ async def _quiz(payload: QuizRequest, exchange_id: str) -> dict[str, Any]:
                 f"正在依据《{batch[0]['document_name']}》出题，第 {index}/{total} 批，读取本批 {len(batch)} 个片段。",
                 activity=source_activity(batch))
         quiz = await build_quiz(contexts, settings, count=payload.count, difficulty=payload.difficulty,
-                               language=payload.language, topic=payload.topic, on_batch=on_batch)
+                               language=payload.language, topic=payload.topic, on_batch=on_batch, exchange_id=exchange_id)
         citations = quiz.pop('citations')
         warnings = []
         if len(quiz['questions']) < COUNTS[payload.count]:
@@ -1240,6 +1289,28 @@ async def _quiz(payload: QuizRequest, exchange_id: str) -> dict[str, Any]:
     if not db.finish_pending_exchange(exchange_id, result):
         raise generation.cancelled_error(exchange_id)
     return result
+
+
+@app.post('/api/notebooks/{notebook_id}/chat/{exchange_id}/retry')
+async def retry_generation(notebook_id: str, exchange_id: str, payload: RetryGenerationRequest) -> dict:
+    _notebook(notebook_id)
+    exchange = db.get_exchange(notebook_id, exchange_id)
+    if not exchange:
+        raise HTTPException(status_code=404, detail='生成记录不存在或已删除。')
+    job = exchange['result'].get('generation_job')
+    if exchange['status'] != 'error' or exchange['result'].get('cancelled') or not job or job.get('kind') not in ('quiz', 'summary', 'ask'):
+        raise HTTPException(status_code=400, detail='这条记录没有可恢复的生成配置。')
+    # Use the saved explicit source selection, never the notebook-wide default.
+    saved = {**job['payload'], 'notebook_id': notebook_id, 'request_id': None}
+    if not saved.get('document_ids'):
+        raise HTTPException(status_code=400, detail='原来源选择为空，无法恢复。')
+    existing = {doc['id'] for doc in db.list_documents(notebook_id)}
+    if not set(saved['document_ids']).issubset(existing):
+        raise HTTPException(status_code=400, detail='原来源已有资料移走或删除，请重新选择资料生成。')
+    request = {'quiz': QuizRequest, 'summary': SummaryRequest, 'ask': AskRequest}[job['kind']](**saved)
+    identity = payload.request_id or uuid4().hex
+    operation = {'quiz': _quiz, 'summary': _summary, 'ask': _ask}[job['kind']]
+    return await generation.run(notebook_id, identity, lambda: operation(request, identity, job))
 
 
 @app.post('/api/notebooks/{notebook_id}/quiz/{exchange_id}/answer')

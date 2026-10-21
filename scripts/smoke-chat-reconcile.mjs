@@ -17,6 +17,7 @@ const doc = { id: 'course', name: '课程.md', kind: 'md', size_bytes: 100, page
 await page.route('**/api/**', async route => {
   const req = route.request(), p = new URL(req.url()).pathname;
   const fulfill = json => route.fulfill({ json });
+  if (p === '/api/health') return fulfill({ ok: true, service: 'zhixue-notes' });
   if (p === '/api/settings') return fulfill({ model_configured: true, model: 'mock' });
   if (p === '/api/sync') return fulfill({ enabled: true, available: true, conflicts: [], revision, folder: '', devices: 1 });
   if (p === '/api/notebooks') return fulfill({ notebooks: [{ id: 'default', name: '重复显示验收', document_count: 1 }] });

@@ -13,6 +13,7 @@ page.on('pageerror', error => errors.push(error.message));
 await page.route('**/api/**', route => {
   const p = new URL(route.request().url()).pathname;
   const fulfill = json => route.fulfill({ json });
+  if (p === '/api/health') return fulfill({ ok: true, service: 'zhixue-notes' });
   if (p === '/api/notebooks') return fulfill({ notebooks: [{ id: 'default', name: '通信电子线路', document_count: 0 }, { id: 'networks', name: '计算机网络', document_count: 0 }] });
   if (p === '/api/documents') return fulfill({ documents: [] });
   if (p === '/api/notes') return fulfill({ notes: [] });

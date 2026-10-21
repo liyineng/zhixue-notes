@@ -18,6 +18,7 @@ page.on('pageerror', error => errors.push(error.message));
 await page.route('**/api/**', async route => {
   const req = route.request(), url = new URL(req.url()), p = url.pathname;
   const fulfill = json => route.fulfill({ json });
+  if (p === '/api/health') return fulfill({ ok: true, service: 'zhixue-notes' });
   if (p === '/api/settings') return fulfill({ model: 'mock', model_configured: true });
   if (p === '/api/sync') return fulfill({ enabled: false, available: false, conflicts: [] });
   if (p === '/api/notebooks') return fulfill({ notebooks: [{ id: 'default', name: '资料上传验收', document_count: docs.length }] });

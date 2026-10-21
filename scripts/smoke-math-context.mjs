@@ -20,6 +20,7 @@ try {
     const errors=[]; page.on('pageerror',e=>errors.push(e.message));
     await page.route('**/api/**',r=>{
       const p=new URL(r.request().url()).pathname; let data={};
+      if(p==='/api/health') return r.fulfill({json:{ok:true,service:'zhixue-notes'}});
       if(p==='/api/notebooks') data={notebooks:[{id:'default',name:'公式验收',document_count:0}]};
       else if(p==='/api/documents') data={documents:[]};
       else if(p==='/api/notes') data={notes:[]};

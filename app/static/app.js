@@ -2,6 +2,8 @@ import { initializeDeletedChatPanel } from '/static/deleted-chat-panel.js';
 import { initializeAttachmentManager } from '/static/attachment-manager.js';
 import { renderAnswerHtml, matchingSourceLines } from "/static/answer-format.js";
 import { initializeCloudSync } from '/static/cloud-sync.js';
+import { initializeServiceStatus } from '/static/service-status.js';
+import { initializeDocumentStatus } from '/static/document-status.js';
 import { presentationHighlights } from '/static/presentation-highlights.js';
 import { initializePanelResize } from '/static/panel-resize.js';
 import { renderQuiz } from '/static/quizzes.js';
@@ -104,6 +106,7 @@ const savingAnswers = new Set();
 let chatPollTimer = null;
 let chatPollFailures = 0;
 let holdChatScroll = false;
+let workspaceReady = false;
 
 const citationPalette = [
   ["#2563eb", "rgba(37,99,235,.19)"], ["#047857", "rgba(5,150,105,.20)"],
@@ -342,7 +345,11 @@ function renderDocuments() {
     move.addEventListener("click", () => moveDocument(doc).catch((error) => showToast(error.message, true)));
     const actions = document.createElement("div");
     actions.className = "document-actions";
-    actions.append(move, remove);
+    const processing = document.createElement('button'); processing.type = 'button';
+    processing.className = 'document-move document-status-open'; processing.textContent = '解析';
+    processing.setAttribute('aria-label', `查看 ${doc.name} 的解析状态`);
+    processing.addEventListener('click', () => documentStatus.open(doc));
+    actions.append(processing, move, remove);
     item.append(icon, content, actions);
     dom.documentList.append(item);
   });
@@ -426,7 +433,57 @@ async function uploadFiles(files, asAttachment = false) {
   showToast([completed, ...unreadPages, failure].filter(Boolean).join('；'), Boolean(failure || unreadPages.length));
 }
 
+const previewLoads = new Map();
+let currentPreviewRequest = null;
+
+function acquirePreview(doc) {
+  let load = previewLoads.get(doc.id);
+  if (!load) {
+    load = { users: 0, task: null, pdf: null };
+    previewLoads.set(doc.id, load);
+    load.promise = (async () => {
+      let input = { url: `/api/documents/${doc.id}/file` };
+      if (doc.kind === 'pptx') {
+        const response = await fetch(`/api/documents/${doc.id}/preview`);
+        if (!response.ok) {
+          const detail = await response.json().catch(() => ({}));
+          throw new Error(detail.detail || '课件预览暂不可用。');
+        }
+        input = { data: new Uint8Array(await response.arrayBuffer()) };
+      }
+      load.task = pdfjsLib.getDocument({
+        ...input,
+        cMapUrl: "/static/vendor/pdfjs/cmaps/", cMapPacked: true,
+        iccUrl: "/static/vendor/pdfjs/iccs/",
+        standardFontDataUrl: "/static/vendor/pdfjs/standard_fonts/",
+        wasmUrl: "/static/vendor/pdfjs/wasm/",
+      });
+      load.pdf = await load.task.promise;
+      return load.pdf;
+    })();
+    const forget = () => { if (previewLoads.get(doc.id) === load) previewLoads.delete(doc.id); };
+    load.promise.then(forget, forget);
+  }
+  load.users++;
+  return load;
+}
+
+function releasePreview(documentId, load) {
+  if (--load.users) return;
+  if (previewLoads.get(documentId) === load) previewLoads.delete(documentId);
+  // A stale request may finish after a different citation has been opened.
+  // Keep only the document adopted by the latest viewer request.
+  if (!load.pdf || load.pdf !== state.pdfDocument) load.task?.destroy().catch(() => {});
+}
+
+function clearPreviewRecovery() {
+  document.getElementById('preview-recovery').hidden = true;
+  document.getElementById('preview-recovery-message').textContent = '';
+}
+
 function resetViewer() {
+  currentPreviewRequest = null;
+  clearPreviewRecovery();
   document.getElementById('viewer-document').classList.remove('is-text');
   state.viewerGeneration++;
   state.renderGeneration++;
@@ -498,76 +555,106 @@ async function openTextDocument(doc, errorMessage = '') {
   }
 }
 
-async function openPdf(documentId, pageNumber, lines = [], references = []) {
+async function showPreviewFailure(doc, request, error, generation) {
+  if (generation !== state.viewerGeneration) return;
+  state.renderGeneration++;
+  state.renderTask?.cancel();
+  state.renderTask = null;
+  document.getElementById('viewer-document').classList.add('is-text');
+  dom.viewerScroll.hidden = true;
+  dom.viewerEmpty.hidden = true;
+  dom.highlightLayer.replaceChildren();
+  ui['highlight-legend'].hidden = true;
+  dom.pageInput.value = String(request.pageNumber);
+  dom.pageTotal.textContent = `/ ${doc.page_count || '?'}`;
+  const recovery = document.getElementById('preview-recovery');
+  document.getElementById('preview-recovery-message').textContent = `第 ${request.pageNumber} 页原页预览暂不可用：${error.message} ${request.quoteHtml ? '引用摘录与页码已保留，' : ''}可重试或在新窗口打开原文件。`;
+  recovery.hidden = false;
+  if (request.quoteHtml) {
+    dom.sourceText.innerHTML = request.quoteHtml;
+    return;
+  }
+  dom.sourceText.textContent = '正在读取本页提取文字…';
+  try {
+    const { chunks } = await api(`/api/documents/${doc.id}/chunks`);
+    if (generation !== state.viewerGeneration) return;
+    const pageChunks = chunks.filter(chunk => Number(chunk.page) === request.pageNumber);
+    dom.sourceText.replaceChildren();
+    for (const chunk of pageChunks.length ? pageChunks : chunks) {
+      const section = document.createElement('section');
+      section.className = 'source-chunk';
+      const heading = document.createElement('strong');
+      heading.textContent = chunk.page ? `第 ${chunk.page} 页 / 部分` : `片段 ${chunk.index}`;
+      const paragraph = document.createElement('p');
+      paragraph.textContent = chunk.text;
+      section.append(heading, paragraph);
+      dom.sourceText.append(section);
+    }
+    if (!chunks.length) dom.sourceText.textContent = '此资料暂无可显示的提取文字，可重试预览或打开原文件。';
+  } catch (_) {
+    if (generation === state.viewerGeneration) dom.sourceText.textContent = '提取文字暂不可用，可重试预览或打开原文件。';
+  }
+}
+
+document.getElementById('retry-preview').addEventListener('click', () => {
+  const request = currentPreviewRequest;
+  if (!request || request.notebookId !== state.notebookId) return;
+  openPdf(request.documentId, request.pageNumber, request.lines, request.references, request.quoteHtml);
+});
+
+async function openPdf(documentId, pageNumber, lines = [], references = [], quoteHtml = '') {
   const generation = ++state.viewerGeneration;
   const doc = state.documents.find((item) => item.id === documentId);
   if (!doc) {
     showToast("找不到对应资料。", true);
     return;
   }
+  const request = { documentId, pageNumber: Math.max(1, Number(pageNumber) || 1), lines, references, quoteHtml, notebookId: state.notebookId };
+  currentPreviewRequest = request;
+  clearPreviewRecovery();
   document.getElementById('viewer-document').classList.remove('is-text');
+  state.renderGeneration++;
+  state.renderTask?.cancel();
+  state.renderTask = null;
   state.highlightLines = lines || [];
   state.previewCitations = doc.kind === 'pptx' ? references : [];
   state.viewerDocumentId = documentId;
   dom.viewerName.textContent = doc.name;
-  dom.viewerEmpty.hidden = doc.kind !== 'pptx';
-  dom.viewerScroll.hidden = doc.kind === 'pptx';
-  if (doc.kind === 'pptx') dom.viewerEmpty.querySelector('p').textContent = '正在生成课件原页预览，首次打开可能需要一点时间…';
+  dom.viewerEmpty.hidden = false;
+  dom.viewerScroll.hidden = true;
+  dom.viewerEmpty.querySelector('p').textContent = doc.kind === 'pptx' ? `正在打开第 ${request.pageNumber} 页原页预览，首次转换可能需要一点时间…` : `正在打开第 ${request.pageNumber} 页…`;
+  dom.pageInput.value = String(request.pageNumber);
+  dom.pageTotal.textContent = state.pdfDocumentId === documentId && state.pdfDocument ? `/ ${state.pdfPageCount}` : '/ …';
+  if (!quoteHtml) dom.sourceText.textContent = '打开资料后，可点击回答中的引用查看对应摘录。';
 
+  let load = null;
   try {
     if (state.pdfDocumentId !== documentId || !state.pdfDocument) {
-      state.renderGeneration++;
-      state.renderTask?.cancel();
-      state.renderTask = null;
       dom.highlightLayer.replaceChildren();
       ui["highlight-legend"].hidden = true;
       dom.canvas.width = 0;
       dom.canvas.height = 0;
       state.pdfLoadingTask?.destroy().catch(() => {});
+      state.pdfLoadingTask = null;
       state.pdfDocument = null;
       state.previewPageLines.clear();
       state.pdfDocumentId = documentId;
-      let input = { url: `/api/documents/${documentId}/file` };
-      if (doc.kind === 'pptx') {
-        const response = await fetch(`/api/documents/${documentId}/preview`);
-        if (!response.ok) {
-          const detail = await response.json().catch(() => ({}));
-          throw new Error(detail.detail || '课件预览暂不可用。');
-        }
-        const data = new Uint8Array(await response.arrayBuffer());
-        if (generation !== state.viewerGeneration) return;
-        input = { data };
-      }
-      const loadingTask = pdfjsLib.getDocument({
-        ...input,
-        cMapUrl: "/static/vendor/pdfjs/cmaps/",
-        cMapPacked: true,
-        iccUrl: "/static/vendor/pdfjs/iccs/",
-        standardFontDataUrl: "/static/vendor/pdfjs/standard_fonts/",
-        wasmUrl: "/static/vendor/pdfjs/wasm/",
-      });
-      state.pdfLoadingTask = loadingTask;
-      const pdf = await loadingTask.promise;
+      load = acquirePreview(doc);
+      const pdf = await load.promise;
       if (generation !== state.viewerGeneration) return;
       state.pdfDocument = pdf;
+      state.pdfLoadingTask = load.task;
       state.pdfPageCount = state.pdfDocument.numPages;
       dom.pageTotal.textContent = `/ ${state.pdfPageCount}`;
     }
     dom.viewerEmpty.hidden = true;
     dom.viewerScroll.hidden = false;
-    await renderPdfPage(pageNumber);
+    await renderPdfPage(request.pageNumber);
   } catch (error) {
     if (generation !== state.viewerGeneration) return;
-    if (doc.kind === 'pptx') {
-      await openTextDocument(doc, error.message);
-      return;
-    }
-    console.error("PDF preview failed", error);
-    resetViewer();
-    state.viewerDocumentId = documentId;
-    dom.viewerName.textContent = doc.name;
-    dom.sourceText.textContent = `PDF 预览加载失败：${error.message}`;
-    showToast("PDF 预览加载失败，可使用右上角按钮在新窗口打开。", true);
+    await showPreviewFailure(doc, request, error, generation);
+  } finally {
+    if (load) releasePreview(documentId, load);
   }
 }
 
@@ -575,6 +662,7 @@ async function renderPdfPage(pageNumber) {
   if (!state.pdfDocument) return;
   const safePage = Math.max(1, Math.min(Number(pageNumber) || 1, state.pdfPageCount));
   state.pdfPage = safePage;
+  if (currentPreviewRequest?.documentId === state.pdfDocumentId) currentPreviewRequest.pageNumber = safePage;
   dom.pageInput.value = String(safePage);
 
   if (state.renderTask) {
@@ -885,6 +973,36 @@ function setAssistantError(messageId, error) {
   const label = article.querySelector(".message-label span:last-child");
   if (label) label.textContent = "请求失败";
   article.querySelector(".message-body").textContent = error.message;
+}
+
+function addGenerationRetry(article, exchange) {
+  const saved = exchange.result.generation_job;
+  if (!saved || exchange.result.cancelled || article.querySelector('.retry-generation')) return;
+  const button = document.createElement('button'); button.type = 'button'; button.className = 'button ghost retry-generation';
+  const done = Object.keys(saved.batches || {}).length;
+  button.textContent = `按原来源重试${done ? ` · 已保留 ${done}/${saved.total || done} 批` : ''}`;
+  button.addEventListener('click', async () => {
+    if (state.busy) return;
+    const ids = saved.payload?.document_ids || [];
+    const docs = ids.map(id => state.documents.find(doc => doc.id === id));
+    if (!ids.length || docs.some(doc => !doc)) return showToast('原来源已移动或删除，请重新选择资料生成。', true);
+    if (!window.confirm(`使用原来的 ${docs.length} 份来源继续生成？\n${docs.map(doc => doc.name).join('\n')}\n资料或模型配置有变化的批次会重新生成。`)) return;
+    const identity = crypto.randomUUID(), notebook = state.notebookId;
+    const userId = addMessage('user', exchange.question, {id:`user-${identity}`});
+    addMessage('assistant', '', {id:identity, loading:true});
+    const job = startGeneration(exchange.question, identity); setBusy(true);
+    try {
+      await api(`/api/notebooks/${encodeURIComponent(notebook)}/chat/${encodeURIComponent(exchange.id)}/retry`,
+        {...jsonOptions('POST', {request_id:identity}), signal:job.controller.signal});
+    } catch (error) {
+      if (job.cancelled) setAssistantCancelled(identity); else setAssistantError(identity, error);
+    } finally {
+      bindExchange(identity, userId, identity);
+      finishGeneration(job);
+      if (notebook === state.notebookId) await loadChat(true).catch(error => showToast(error.message, true));
+    }
+  });
+  article.querySelector('.message-body').append(document.createElement('br'), button);
 }
 
 function setAssistantCancelled(messageId) {
@@ -1257,7 +1375,8 @@ function showCitation(citation, messageId, citationIndex) {
       citation.document_id,
       targetPage,
       highlightLines,
-      references.filter(ref => ref.document_id === citation.document_id)
+      references.filter(ref => ref.document_id === citation.document_id),
+      dom.sourceText.innerHTML
     );
   } else {
     document.getElementById('viewer-document').classList.add('is-text');
@@ -1385,6 +1504,7 @@ async function generateSummary(configuration = {}) {
     bindExchange(assistantId, userId, error.chatId || (job.cancelled ? job.id : null));
   } finally {
     finishGeneration(job);
+    if (dom.messages.querySelector(`[data-message-id="${assistantId}"].error`)) await loadChat(true).catch(() => {});
   }
 }
 
@@ -1529,7 +1649,7 @@ async function openQuizPanel(exchange, restore = false) {
       }
       return updated;
     };
-    renderQuiz(content, result, { colorCitation,
+    renderQuiz(content, result, { colorCitation, notebookId: notebook,
       onAnswer: (question_id, option) => update('/answer', { question_id, option }),
       onReset: () => update('/reset', {}),
       onCitation: index => {
@@ -1596,7 +1716,10 @@ async function generateQuiz(configuration) {
     if (job.cancelled || error.cancelled) setAssistantCancelled(assistantId);
     else { setAssistantError(assistantId, error); showToast(error.message, true); }
     bindExchange(assistantId, userId, error.chatId || (job.cancelled ? job.id : null));
-  } finally { finishGeneration(job); }
+  } finally {
+    finishGeneration(job);
+    if (dom.messages.querySelector(`[data-message-id="${assistantId}"].error`)) await loadChat(true).catch(() => {});
+  }
 }
 
 const featuresDialog = document.getElementById('features-dialog');
@@ -1873,7 +1996,7 @@ async function loadChat(polling = false) {
       if (result.image_question_text && !user.querySelector('.image-recognition')) addRecognizedText(user, result.image_question_text, result.image_recognition_mode);
     } else if (exchange.status === "error") {
       if (exchange.result.cancelled) setAssistantCancelled(id);
-      else setAssistantError(id, new Error(exchange.result.detail || "上次请求未完成，请重新提问。"));
+      else { setAssistantError(id, new Error(exchange.result.detail || "上次请求未完成，请重新提问。")); addGenerationRetry(article, exchange); }
     } else {
       renderGenerationProgress(id, exchange.result.progress, exchange.created_at);
     }
@@ -2300,12 +2423,23 @@ async function initialize() {
     await Promise.all([loadDocuments(true), loadNotes(), loadSettings(), loadChat()]);
     setLibraryTab(entryTab || 'sources');
     if (entryTab && innerWidth <= 760) setMobilePane('sources');
+    workspaceReady = true;
   } catch (error) {
     showToast(`初始化失败：${error.message}`, true);
   } finally { setBusy(state.chatPending); }
 }
 
+const documentStatus = initializeDocumentStatus({ api, notebookId: () => state.notebookId, toast: showToast,
+  onUpdated: () => loadDocuments() });
 initializePanelResize(() => { if (state.pdfDocument && document.getElementById('viewer-document').clientWidth > 0) renderPdfPage(state.pdfPage); });
+initializeServiceStatus({ isGenerating: () => state.busy || state.chatPending || Boolean(state.activeGeneration),
+  onReconnect: async () => {
+    if (!workspaceReady && !state.activeGeneration) {
+      await loadNotebooks();
+      await Promise.all([loadDocuments(true), loadNotes(), loadSettings(), loadChat(true)]);
+      workspaceReady = true;
+    } else if (state.chatPending) scheduleChatPoll(state.notebookId, 0);
+  } });
 initialize();
 
 initializeCloudSync({ api, jsonOptions, showToast, refresh: async () => {

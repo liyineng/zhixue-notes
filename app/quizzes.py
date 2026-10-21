@@ -8,7 +8,7 @@ from collections import defaultdict, deque
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from . import db
+from . import db, batch_jobs
 from .llm import chat_completion, _context_text, _extract_json, cited_sources, MATH_FORMAT
 from .summaries import summary_batches
 
@@ -67,12 +67,13 @@ def validate_questions(data: Any, contexts: list[dict], limit: int) -> list[dict
 
 async def build_quiz(contexts: list[dict], settings: dict, *, count: str, difficulty: str,
                      language: str, topic: str,
-                     on_batch: Callable[[list[dict], int, int], Awaitable[None]]) -> dict:
+                     on_batch: Callable[[list[dict], int, int], Awaitable[None]], exchange_id: str | None = None) -> dict:
     batches = summary_batches(contexts, character_limit=10000)
     target = COUNTS[count]
     per_batch = max(1, math.ceil(target / len(batches)))
     groups = defaultdict(deque)
     seen = set()
+    checkpoints = batch_jobs.Checkpoints(exchange_id, settings, ['quiz', count, difficulty, language, topic], batches) if exchange_id else None
     for number, batch in enumerate(batches, 1):
         await on_batch(batch, number, len(batches))
         messages = [{'role': 'system', 'content':
@@ -90,7 +91,10 @@ async def build_quiz(contexts: list[dict], settings: dict, *, count: str, diffic
                 {'role': 'user', 'content': f'最多生成 {per_batch} 题。难度：{DIFFICULTIES[difficulty]}。'
                  f'输出语言：{LANGUAGES[language]}。主题：{topic or "本批资料的主要知识点"}。\n'
                  f'资料：\n{_context_text(batch, character_limit=100000)}'}]
-        for attempt in range(2):
+        cached = checkpoints.get(number - 1) if checkpoints else None
+        if isinstance(cached, list):
+            candidates = validate_questions({'questions': cached}, batch, per_batch)
+        for attempt in range(0 if isinstance(cached, list) else 2):
             text = await chat_completion(base_url=str(settings['base_url']), api_key=str(settings.get('api_key', '')),
                 model=str(settings['model']), temperature=0.2 if not attempt else 0,
                 max_tokens=8192, thinking=False, json_mode=True, messages=messages)
@@ -105,6 +109,8 @@ async def build_quiz(contexts: list[dict], settings: dict, *, count: str, diffic
                 messages.append({'role': 'user', 'content':
                     f'上次输出未通过校验：{exc}。请重新根据上面的同一批资料生成题目，严格遵守 JSON 结构。'
                     r'JSON 中所有 LaTeX 反斜杠必须双写，例如 "\\(\\frac{1}{2}\\)"，不可输出未转义的公式。'})
+        if checkpoints:
+            checkpoints.save(number - 1, candidates)
         for question in candidates:
             key = re.sub(r'\s+', '', question['prompt']).casefold()
             if key not in seen:

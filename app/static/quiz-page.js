@@ -38,6 +38,7 @@ try {
   document.title = `${result.quiz.topic || '交互式测验'} · 智学笔记`;
   document.getElementById('quiz-page-title').textContent = result.quiz.topic || result.title || '课程测验';
   renderQuiz(document.getElementById('quiz-page-body'), result, {
+    notebookId: notebook,
     onAnswer: (question_id, option) => update('/answer', { question_id, option }),
     onReset: () => update('/reset', {}), onCitation: showSource,
     colorCitation: (element, index) => { element.style.setProperty('--citation-color', colors[(index - 1) % colors.length]); element.style.setProperty('--citation-bg', '#f0f5ff'); },

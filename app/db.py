@@ -120,8 +120,11 @@ def init_db() -> None:
         if "reply_to_json" not in chat_columns:
             conn.execute("ALTER TABLE chat_exchanges ADD COLUMN reply_to_json TEXT NOT NULL DEFAULT '{}'")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_chat_deleted ON chat_exchanges(notebook_id, deleted_at)")
-        conn.execute("""UPDATE chat_exchanges SET status='error', result_json=? WHERE status='pending'""",
-                     (json.dumps({"detail": "上次生成未完成，请重新提问。"}, ensure_ascii=False),))
+        for row in conn.execute("SELECT id,result_json FROM chat_exchanges WHERE status='pending'").fetchall():
+            result = json.loads(row['result_json'])
+            result['detail'] = '本地服务已重启，上次生成中断。已完成批次保留，可重试继续。' if result.get('generation_job') else '上次生成未完成，请重新提问。'
+            conn.execute("UPDATE chat_exchanges SET status='error',result_json=? WHERE id=?",
+                         (json.dumps(result, ensure_ascii=False), row['id']))
         conn.execute(
             "INSERT OR IGNORE INTO notebooks VALUES (?, ?, ?)",
             ("default", "我的课程", datetime.now(UTC).isoformat()),

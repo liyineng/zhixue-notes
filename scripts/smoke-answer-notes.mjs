@@ -28,6 +28,7 @@ let notes=[],posts=0,patches=0,manualPosts=0;
 let release;const gate=new Promise(resolve=>release=resolve);
 await page.route('**/api/**',async route=>{
  const req=route.request(),p=new URL(req.url()).pathname,method=req.method();const fulfill=json=>route.fulfill({json});
+ if (p === '/api/health') return fulfill({ ok: true, service: 'zhixue-notes' });
  if(p==='/api/settings')return fulfill({model:'mock',model_configured:true});
  if(p==='/api/sync')return fulfill({enabled:false,available:false,conflicts:[]});
  if(p==='/api/notebooks')return fulfill({notebooks:[{id:'default',name:'笔记体验验收',document_count:1,note_count:notes.length}]});

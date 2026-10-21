@@ -38,6 +38,7 @@ await page.route(url => url.pathname.startsWith('/quiz/'), async route => route.
 await page.route('**/api/**', async route => {
   const request = route.request(), url = new URL(request.url()), p = url.pathname, method = request.method();
   const fulfill = json => route.fulfill({ json });
+  if (p === '/api/health') return fulfill({ ok: true, service: 'zhixue-notes' });
   if (p === '/api/settings') return fulfill({ model: 'mock', model_configured: true });
   if (p === '/api/sync') return fulfill({ enabled: false, available: false, conflicts: [], revision: '' });
   if (p === '/api/notebooks') return fulfill({ notebooks: [{ id: 'default', name: '电路复习 · 测验验收', document_count: 2 }] });
@@ -169,6 +170,8 @@ try {
   assert.equal(await page.locator('.quiz-explanation').count(), 0);
   assert.equal(await page.locator('.quiz-check').isDisabled(), true);
   await page.locator('.quiz-option').nth(1).click();
+  assert.equal(await page.locator('.quiz-save-state').isVisible(), true);
+  assert.match(await page.locator('.quiz-save-state').innerText(), /待提交.*草稿已保存/);
   await page.locator('.quiz-check').click();
   await page.locator('.quiz-feedback.is-incorrect').waitFor();
   assert.match(await page.locator('.quiz-status').innerText(), /已答 1 \/ 2.*答对 0/);
@@ -218,6 +221,7 @@ try {
   await page.waitForFunction(() => document.querySelector('.viewer-pane').dataset.studyLayout === 'rows');
   assert.equal(await page.locator('#viewer-document').isVisible(), true);
   assert.equal(await page.locator('#quiz-workspace').isVisible(), true);
+  assert.equal(await page.locator('.quiz-save-state').isVisible(), true);
   const mobileOriginal = await page.locator('#viewer-document').boundingBox();
   const mobilePractice = await page.locator('#quiz-workspace').boundingBox();
   assert(mobileOriginal.y + mobileOriginal.height <= mobilePractice.y + 2);
