@@ -25,7 +25,7 @@ from .attachment_followups import recover_attachment_problem
 from .quizzes import build_quiz, save_attempt, COUNTS
 from .previews import presentation_pdf, presentation_page_geometry, PreviewError
 from .conversation import recent_context, referenced_sources
-from .model_context import context_info, resolve_context, history_budget, source_reserve, estimate_tokens, answer_output_budgets
+from .model_context import context_info, resolve_context, history_budget, source_reserve, estimate_tokens
 from .progress import source_activity
 from .summaries import summary_batches
 from .config import (
@@ -36,12 +36,12 @@ from .config import (
     QUESTION_IMAGE_DIR,
     ensure_directories,
 )
-from .llm import analyze_question, answer_question, make_summary, model_configured, select_evidence, cited_sources, uses_original_question_images
+from .llm import analyze_question, answer_question, make_summary, model_configured, select_evidence, cited_sources
 from .parsers import UnsupportedDocument, parse_document
 from .retrieval import BM25Index, excerpt, focus_source, page_sources, summary_documents, named_question_documents, exercise_sources, is_exercise_question, is_formula_inventory
 from .question_images import MAX_IMAGE_BYTES, normalize_image, local_ocr, read_question
 from .document_images import ensure_image_text, ensure_presentation_formulas
-from urllib.parse import quote, urlparse
+from urllib.parse import quote
 
 mimetypes.add_type("text/javascript", ".mjs")
 
@@ -62,11 +62,6 @@ def _generation_failure(exchange_id: str, notebook_id: str, exc: Exception) -> s
     if steps:
         detail = f"{steps[-1]['label']}时失败：{detail}"
     result = {'detail': detail, 'error_type': type(exc).__name__, 'failed_progress': progress}
-    for key in ('image_question_text', 'image_recognition_mode', 'image_answer_mode'):
-        if key in (exchange or {}).get('result', {}):
-            result[key] = exchange['result'][key]
-    if isinstance(getattr(exc, 'diagnostics', None), dict):
-        result['model_response'] = exc.diagnostics
     if (exchange or {}).get('result', {}).get('generation_job'):
         result['generation_job'] = exchange['result']['generation_job']
     db.finish_pending_exchange(exchange_id, result, error=True)
@@ -179,7 +174,7 @@ class SettingsRequest(BaseModel):
     api_key: str | None = Field(default=None, max_length=2000)
     model: str | None = Field(default=None, max_length=300)
     temperature: float | None = Field(default=None, ge=0, le=2)
-    max_tokens: int | None = Field(default=None, ge=128, le=393216)
+    max_tokens: int | None = Field(default=None, ge=128, le=8192)
     context_window: int | None = Field(default=None, ge=0, le=10000000)
     top_k: int | None = Field(default=None, ge=0, le=12)
     vision_model: str | None = Field(default=None, max_length=300)
@@ -249,9 +244,6 @@ def _public_settings(settings: dict[str, Any]) -> dict[str, Any]:
     result["model_configured"] = model_configured(settings)
     result["vision_api_key_set"] = bool(str(settings.get("vision_api_key", "")).strip())
     result['model_context'] = context_info(settings)
-    initial, retry = answer_output_budgets(settings)
-    result['answer_output_budget'] = {'initial': initial, 'retry': retry,
-        'includes_reasoning': urlparse(str(settings.get('base_url', ''))).hostname == 'api.deepseek.com'}
     return result
 
 
@@ -946,8 +938,6 @@ async def _ask(payload: AskRequest, exchange_id: str, checkpoint_job: dict | Non
         db.set_generation_progress(exchange_id, 'question', '读取问题附件' if images else '分析问题',
                                    '正在读取本次附件中的题干与已知条件。' if images else '正在理解问题和近期对话。')
         image_text, image_mode = await read_question(images, settings, payload.image_text) if images else ("", "")
-        if images:
-            db.set_generation_metadata(exchange_id, {'image_question_text': image_text, 'image_recognition_mode': image_mode})
         if attachment_text:
             db.set_generation_progress(exchange_id, 'question', '重读附件题干',
                                        '正在按指定题号读取最近问题的原始附件，核对完整条件。')
@@ -1093,11 +1083,8 @@ async def _ask(payload: AskRequest, exchange_id: str, checkpoint_job: dict | Non
                     history, context_turns = shorter_history, retained_turns
                 if estimate_tokens(effective_question) + evidence_size > history_budget(model_context, settings, ''):
                     raise RuntimeError('全部相关片段超出当前模型的上下文容量，请缩小勾选来源范围或检查模型上下文设置。')
-            image_options = {'images': images} if images else {}
-            if any(Path(image['path']).suffix.lower() == '.png' for image in images):
-                db.set_generation_metadata(exchange_id, {'image_answer_mode': 'original' if uses_original_question_images(settings) else 'transcript'})
             answer = await answer_question(effective_question, contexts, settings,
-                                           document_names, analysis["needs_retrieval"], **image_options)
+                                           document_names, analysis["needs_retrieval"])
         answer, contexts = cited_sources(answer, contexts)
         if coverage is not None:
             coverage.update(summary_coverage_data(coverage, contexts))
@@ -1123,7 +1110,6 @@ async def _ask(payload: AskRequest, exchange_id: str, checkpoint_job: dict | Non
         "elapsed_ms": elapsed_ms,
         "image_question_text": image_text,
         "image_recognition_mode": image_mode,
-        "image_answer_mode": ('original' if uses_original_question_images(settings) else 'transcript') if any(Path(image['path']).suffix.lower() == '.png' for image in images) else '',
         "question_attachment_refs": attachment_followup['references'] if attachment_followup else [],
         "context_turns": context_turns,
         "context_window": model_context['context_window'],

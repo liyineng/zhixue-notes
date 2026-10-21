@@ -42,16 +42,6 @@ class ModelContextTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(budget, 64000 - 4000 - 12000 - 8192 - len('当前问题'.encode()))
         self.assertEqual(context.history_budget({'context_window': 100}, settings, '问题', 12000), 0)
 
-    def test_reasoning_budgets_and_history_reserve_follow_same_bounded_policy(self):
-        settings = {'base_url': 'https://api.deepseek.com', 'model': 'deepseek-flash', 'max_tokens': 3000}
-        self.assertEqual(context.answer_output_budgets(settings), (32768, 65536))
-        expected = 1048576 - 65536 - 12000 - len('问题'.encode()) - 8192
-        self.assertEqual(context.history_budget(context.context_info(settings), settings, '问题', 12000), expected)
-        self.assertEqual(context.answer_output_budgets({**settings, 'max_tokens': 100000}), (100000, 100000))
-        self.assertEqual(context.answer_output_budgets({**settings, 'max_tokens': 500000}), (393216, 393216))
-        self.assertEqual(context.answer_output_budgets({**settings, 'context_window': 32768}), (24576, 24576))
-        self.assertEqual(context.answer_output_budgets({'base_url': 'https://other.invalid', 'model': 'test', 'max_tokens': 3000}), (3000, 3000))
-
     def test_history_grows_with_model_budget_and_keeps_newest_first(self):
         exchanges = [{'question': f'问题{i}', 'result': {'answer': '答案' * 1000 + str(i)}} for i in range(10)]
         full, count = recent_context(exchanges, 100000)

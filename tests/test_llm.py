@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, patch
 
 import httpx
 
-from app.llm import chat_completion, answer_question
+from app.llm import chat_completion
 
 
 class CompletionTests(unittest.TestCase):
@@ -75,41 +75,6 @@ class CompletionTests(unittest.TestCase):
         self.assertEqual(result, '推导后的完整答案')
         self.assertEqual(requests[1]['thinking'], {'type': 'enabled'})
         self.assertGreaterEqual(requests[1]['max_tokens'], 8192)
-
-    def test_visual_reasoning_retry_grows_to_64k_and_preserves_original_messages(self):
-        requests = []
-        def handle(request):
-            requests.append(json.loads(request.content))
-            return httpx.Response(200, json=self.reply('部分正文' if len(requests) == 1 else '完整正文', 'length' if len(requests) == 1 else 'stop'))
-        content = [{'type': 'text', 'text': '当前题目与资料'}, {'type': 'image_url', 'image_url': {'url': 'data:image/png;base64,aW1hZ2U='}}]
-        client = httpx.AsyncClient(transport=httpx.MockTransport(handle))
-        with patch('app.llm.httpx.AsyncClient', return_value=client):
-            result = asyncio.run(chat_completion(base_url='https://api.deepseek.com', api_key='test',model='deepseek-flash',
-                messages=[{'role': 'user', 'content': content}], temperature=0, max_tokens=32768, thinking=True))
-        self.assertEqual(result, '完整正文')
-        self.assertEqual([r['max_tokens'] for r in requests], [32768, 65536])
-        self.assertTrue(all(r['thinking'] == {'type': 'enabled'} for r in requests))
-        self.assertTrue(all(r['messages'][0]['content'] == content for r in requests))
-        self.assertNotIn('private reasoning', str(requests))
-
-    def test_persistent_length_reports_attempted_budgets_without_private_reasoning(self):
-        with self.assertRaises(RuntimeError) as raised:
-            self.call([self.reply('部分答案', 'length')], thinking=True)
-        self.assertIn('2600 → 65536', str(raised.exception))
-        self.assertEqual(raised.exception.diagnostics['attempted_output_budgets'], [2600, 65536])
-        self.assertNotIn('private reasoning', str(raised.exception.diagnostics))
-
-    def test_manual_context_cap_is_retained_in_the_reasoning_retry(self):
-        requests = []
-        def handle(request):
-            requests.append(json.loads(request.content))
-            return httpx.Response(200, json=self.reply('未完成', 'length'))
-        client = httpx.AsyncClient(transport=httpx.MockTransport(handle))
-        with patch('app.llm.httpx.AsyncClient', return_value=client):
-            with self.assertRaises(RuntimeError):
-                asyncio.run(answer_question('核对题图', [], {'base_url': 'https://api.deepseek.com',
-                    'model': 'deepseek-flash', 'context_window': 32768, 'max_tokens': 3000}))
-        self.assertEqual([r['max_tokens'] for r in requests], [24576, 24576])
 
     def test_persistent_empty_is_an_error_not_none_or_success(self):
         with self.assertRaisesRegex(RuntimeError, '空的正文'):

@@ -165,10 +165,8 @@ class WorkspaceTests(unittest.TestCase):
         image = upload.json()["image"]
         self.assertNotIn("path", image)
 
-        async def answer(question, contexts, *args, images=None):
+        async def answer(question, contexts, *args):
             self.assertIn("请解释网络协议的作用", question)
-            self.assertEqual([item['id'] for item in images], [image['id']])
-            self.assertTrue(Path(images[0]['path']).is_file())
             self.assertTrue(contexts)
             self.assertTrue(all(c["document_id"] == document_id for c in contexts))
             return "结合课程资料回答 [1]。"

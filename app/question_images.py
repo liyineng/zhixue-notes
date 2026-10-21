@@ -13,18 +13,6 @@ from PIL import Image, ImageOps, UnidentifiedImageError
 
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
 MAX_IMAGE_PIXELS = 20_000_000
-QUESTION_TRANSCRIPTION_INSTRUCTION = (
-    "逐张识别题目，保留完整题干、所有已知条件、问题、选项和子图编号，公式转为 LaTeX。"
-    "图表请描述坐标、数值与几何条件。"
-    "电路图须逐个子图记录器件标号、端子和连接节点：准确区分晶体管 b/c/e 与场效应管 g/d/s，"
-    "按原图符号、引脚及标注辨认，不能按上下左右位置猜测。"
-    "为同一根连续导线连接的端子列出同一节点，并逐项说明每个电感、电容的两端分别接哪个节点；"
-    "保留原图节点名称，若自行编号须说明编号仅用于描述。不要只写某个引脚接一段导线。"
-    "遇到带抽头的电感或电容分压支路，分别写明两侧端点、抽头/中点及所接引脚，不能漏掉中间节点或把它短接。"
-    "核对交叉导线与连接点的区别，交叉不等于相连；连接点、公共端或引脚看不清时标为[看不清]，不要补猜。"
-    "不要把未画出的器件、寄生支路、接地或数值补成原图已知条件。"
-    "只转写可见条件，不判断是否振荡等结论，不要解题。"
-)
 
 
 def normalize_image(content: bytes, target: Path) -> None:
@@ -91,7 +79,9 @@ async def read_question(images: list[dict[str, Any]], settings: dict[str, Any],
         # A separate provider must never implicitly receive the chat provider's secret.
         key = settings.get("vision_api_key", "") if settings.get("vision_base_url") else (
             settings.get("vision_api_key") or settings.get("api_key", ""))
-        content: list[dict[str, Any]] = [{"type": "text", "text": instruction or QUESTION_TRANSCRIPTION_INSTRUCTION}]
+        content: list[dict[str, Any]] = [{"type": "text", "text": instruction or (
+            "逐张识别题目，保留所有已知条件、问题和选项。公式转为 LaTeX。"
+            "图表请描述坐标、连接关系、数值与几何条件。看不清的位置标为[看不清]，不要补猜，也不要解题。")}]
         for image in images:
             encoded = base64.b64encode(Path(image["path"]).read_bytes()).decode("ascii")
             content.append({"type": "image_url", "image_url": {"url": "data:image/png;base64," + encoded}})

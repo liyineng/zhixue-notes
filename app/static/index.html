@@ -313,15 +313,14 @@
             <input id="temperature" type="number" min="0" max="2" step="0.1" value="0.2" />
           </label>
           <label>
-            <span>输出额度（tokens）</span>
-            <input id="max-tokens" type="number" min="128" max="393216" step="1" value="1400" />
+            <span>最大输出长度</span>
+            <input id="max-tokens" type="number" min="128" max="8192" step="1" value="1400" />
           </label>
           <label>
             <span>检索片段数（0 为全部）</span>
             <input id="top-k" type="number" min="0" max="12" step="1" value="6" title="全部：核对勾选来源中所有匹配片段；1–12：限制证据片段数。" />
           </label>
         </div>
-        <p id="output-budget-help" class="document-meta">输出额度受模型接口限制；推理模型的思考与正文可能共用额度。</p>
         <label>
           <span>模型上下文窗口（tokens，0 为自动）</span>
           <input id="context-window" type="number" min="0" max="10000000" step="1" value="0" />
