@@ -10,7 +10,8 @@ const errors=[];page.on('pageerror',e=>errors.push(e.message));
 const doc={id:'course',name:'选中课件.md',kind:'md',page_count:2,chunk_count:2,size_bytes:20};
 const old={id:'old',question:'先前的问题',status:'complete',images:[],reply_to:{},result:{answer:'先前的回答 [1]',mode:'model',citations:[{index:1,document_id:'course',document_name:doc.name,page:1,text:'保存的原文'}]}};
 const failed={id:'failed',question:'生成复习提纲',status:'error',images:[],reply_to:{},result:{detail:'第二批生成超时',generation_job:{kind:'summary',payload:{document_ids:['course']},batches:{first:'已完成'},total:2}}};
-let records=[old,failed], submitted;
+const emptyFailed={id:'empty-failed',question:'解答原附件中的全部题目',status:'error',images:[],reply_to:{},result:{detail:'后续习题解答超时',generation_job:{kind:'ask',payload:{document_ids:[],image_ids:['attachment']},batches:{first:'已完成'},total:7}}};
+let records=[old,failed], submitted, emptyRetried=false;
 await page.route('**/api/**',async route=>{
  const req=route.request(),p=new URL(req.url()).pathname;
  if(p==='/api/health')return route.fulfill({json:{ok:true,service:'zhixue-notes'}});
@@ -20,9 +21,11 @@ await page.route('**/api/**',async route=>{
  if(p==='/api/sync')return route.fulfill({json:{enabled:false,available:false,conflicts:[]}});
  if(p==='/api/notes')return route.fulfill({json:{notes:[]}});
  if(p==='/api/notebooks/default/chat')return route.fulfill({json:{exchanges:records,deleted_count:0}});
- if(p==='/api/notebooks/default/chat/failed/retry'){
+ if(p==='/api/notebooks/default/chat/failed/retry'||p==='/api/notebooks/default/chat/empty-failed/retry'){
+  const target=p.includes('/empty-failed/')?emptyFailed:failed;
+  if(target===emptyFailed)emptyRetried=true;
   submitted=req.postDataJSON();const result={chat_id:submitted.request_id,answer:'恢复完成 [1]',mode:'model',citations:old.result.citations};
-  records.push({id:submitted.request_id,question:failed.question,status:'complete',images:[],reply_to:{},result});
+  records.push({id:submitted.request_id,question:target.question,status:'complete',images:[],reply_to:{},result});
   return route.fulfill({json:result});
  }
  return route.fulfill({json:{}});
@@ -40,6 +43,12 @@ try{
  assert.equal(await previous.locator('details').evaluate(el=>el.open),true);
  assert.equal(await page.locator('#question-input').inputValue(),'当前未发送的草稿');
  assert.equal(await page.locator(`article[data-message-id="${submitted.request_id}"]`).count(),1);
+ records=[old,emptyFailed];
+ await page.reload({waitUntil:'networkidle'});
+ page.once('dialog',async dialog=>{assert.match(dialog.message(),/原附件和空来源选择/);await dialog.accept();});
+ await page.locator('.retry-generation').click();
+ await page.waitForFunction(()=>[...document.querySelectorAll('.message-body')].some(el=>el.textContent.includes('恢复完成')));
+ assert.equal(emptyRetried,true,'An attachment answer with an explicit empty source selection can resume');
  assert.deepEqual(errors,[]);
- console.log('PASS: failed generation retries saved source configuration, displays retained batch count, preserves completed DOM/disclosure and composer drafts.');
+ console.log('PASS: failed generation retries saved source configuration (including attachment-only empty selections), displays retained batch count, preserves completed DOM/disclosure and composer drafts.');
 }finally{await browser.close();}

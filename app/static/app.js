@@ -983,10 +983,12 @@ function addGenerationRetry(article, exchange) {
   button.textContent = `按原来源重试${done ? ` · 已保留 ${done}/${saved.total || done} 批` : ''}`;
   button.addEventListener('click', async () => {
     if (state.busy) return;
-    const ids = saved.payload?.document_ids || [];
+    const ids = saved.payload?.document_ids;
+    if (!Array.isArray(ids) || (!ids.length && saved.kind !== 'ask')) return showToast('原来源选择无效，请重新选择资料生成。', true);
     const docs = ids.map(id => state.documents.find(doc => doc.id === id));
-    if (!ids.length || docs.some(doc => !doc)) return showToast('原来源已移动或删除，请重新选择资料生成。', true);
-    if (!window.confirm(`使用原来的 ${docs.length} 份来源继续生成？\n${docs.map(doc => doc.name).join('\n')}\n资料或模型配置有变化的批次会重新生成。`)) return;
+    if (docs.some(doc => !doc)) return showToast('原来源已移动或删除，请重新选择资料生成。', true);
+    const scope = docs.length ? `原来的 ${docs.length} 份来源` : '原附件和空来源选择';
+    if (!window.confirm(`使用${scope}继续生成？\n${docs.map(doc => doc.name).join('\n')}\n资料或模型配置有变化的批次会重新生成。`)) return;
     const identity = crypto.randomUUID(), notebook = state.notebookId;
     const userId = addMessage('user', exchange.question, {id:`user-${identity}`});
     addMessage('assistant', '', {id:identity, loading:true});

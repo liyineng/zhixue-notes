@@ -22,6 +22,7 @@ from starlette.concurrency import run_in_threadpool
 
 from . import db, generation, cloud_sync, batch_jobs, document_status
 from .attachment_followups import recover_attachment_problem
+from .answer_batches import attachment_exercises
 from .quizzes import build_quiz, save_attempt, COUNTS
 from .previews import presentation_pdf, presentation_page_geometry, PreviewError
 from .conversation import recent_context, referenced_sources
@@ -36,7 +37,7 @@ from .config import (
     QUESTION_IMAGE_DIR,
     ensure_directories,
 )
-from .llm import analyze_question, answer_question, make_summary, model_configured, select_evidence, cited_sources
+from .llm import analyze_question, answer_question, make_summary, model_configured, select_evidence, cited_sources, OutputTruncatedError
 from .parsers import UnsupportedDocument, parse_document
 from .retrieval import BM25Index, excerpt, focus_source, page_sources, summary_documents, named_question_documents, exercise_sources, is_exercise_question, is_formula_inventory
 from .question_images import MAX_IMAGE_BYTES, normalize_image, local_ocr, read_question
@@ -1083,8 +1084,16 @@ async def _ask(payload: AskRequest, exchange_id: str, checkpoint_job: dict | Non
                     history, context_turns = shorter_history, retained_turns
                 if estimate_tokens(effective_question) + evidence_size > history_budget(model_context, settings, ''):
                     raise RuntimeError('全部相关片段超出当前模型的上下文容量，请缩小勾选来源范围或检查模型上下文设置。')
-            answer = await answer_question(effective_question, contexts, settings,
-                                           document_names, analysis["needs_retrieval"])
+            exercises = attachment_exercises(question, image_text) if images and model_configured(settings) else []
+            if exercises:
+                batch_jobs.begin(exchange_id, 'ask', {**payload.model_dump(exclude={'request_id'}),
+                                 'document_ids': [doc['id'] for doc in selected_documents]}, checkpoint_job)
+                answer = await _generate_exercise_answers(
+                    effective_question, image_text, exercises, contexts, settings,
+                    document_names, analysis['needs_retrieval'], exchange_id)
+            else:
+                answer = await answer_question(effective_question, contexts, settings,
+                                               document_names, analysis["needs_retrieval"])
         answer, contexts = cited_sources(answer, contexts)
         if coverage is not None:
             coverage.update(summary_coverage_data(coverage, contexts))
@@ -1146,6 +1155,70 @@ def _summary_scope(contexts: list[dict[str, Any]], documents: list[dict[str, Any
     coverage['pages_by_document'] = {doc['id']: len({c['page'] for c in contexts if c['document_id'] == doc['id'] and c['page'] is not None}) for doc in documents}
     coverage['sources_by_document'] = {doc['id']: sum(c['document_id'] == doc['id'] for c in contexts) for doc in documents}
     return coverage
+
+
+def _complete_exercise_sections(answer: str, exercises: list[dict[str, str]]) -> bool:
+    """Require each requested exercise to have its own nonempty answer section."""
+    headings = list(re.finditer(r'(?m)^#{1,6}\s+习题\s+([^\s：:]+)[^\n]*$', answer))
+    answered = []
+    for index, heading in enumerate(headings):
+        end = headings[index + 1].start() if index + 1 < len(headings) else len(answer)
+        if answer[heading.end():end].strip():
+            answered.append(heading[1])
+    return answered == [exercise['label'] for exercise in exercises]
+
+
+async def _generate_exercise_answers(question: str, attachment_text: str, exercises: list[dict[str, str]],
+                                     contexts: list[dict[str, Any]], settings: dict[str, Any],
+                                     document_names: list[str], needs_retrieval: bool, exchange_id: str) -> str:
+    # Split the output task by complete problem statements, never by source
+    # fragments. All requests retain the same verified, notebook-scoped evidence.
+    batches = [exercises[index:index + 2] for index in range(0, len(exercises), 2)]
+    checkpoints = batch_jobs.Checkpoints(exchange_id, settings,
+        ['exercise_answers_v1', question, contexts, document_names, needs_retrieval], batches)
+    # Current attachment text follows history/explicit quotes in the prompt.
+    # A previous answer may contain the same attachment; leave that snapshot alone.
+    before_attachment, marker, after_attachment = question.rpartition(attachment_text)
+    if not marker:
+        raise RuntimeError('无法定位本次习题附件的完整题干，请重新上传后重试。')
+
+    async def solve(batch: list[dict[str, str]], batch_index: int) -> str:
+        labels = '、'.join(exercise['label'] for exercise in batch)
+        db.set_generation_progress(exchange_id, 'answer', '逐题解答',
+            f'正在解答第 {batch_index}/{len(batches)} 批：{labels}；附件共 {len(exercises)} 道题。',
+            activity=source_activity(contexts))
+        batch_question = before_attachment + '\n\n'.join(exercise['text'] for exercise in batch) + after_attachment
+        batch_question += (f'\n\n本次分批解答，只回答习题 {labels}，不要解答本批以外的题目。'
+                           '保留每题全部小问，逐项给出结果和必要推导。'
+                           '每道题严格使用独立的 Markdown 标题“## 习题 题号”（例如“## 习题 7.1”），'
+                           '标题后必须有实际解答。只使用本次资料片段的引用编号，不要重新从1编号。')
+        try:
+            answer = await answer_question(batch_question, contexts, settings, document_names, needs_retrieval)
+        except OutputTruncatedError as exc:
+            if len(batch) == 1:
+                raise RuntimeError(f'习题 {labels} 单独解答仍超过模型输出上限；本批未保存为完整答案。'
+                                   '请单独指定该题的小问后重试。') from exc
+        else:
+            answer, _ = cited_sources(answer, contexts, renumber=False)
+            if _complete_exercise_sections(answer, batch):
+                return answer
+            if len(batch) == 1:
+                raise RuntimeError(f'习题 {labels} 未返回完整的分题标题和解答，本批未保存，请重试。')
+        # A truncated or missing-question response is never accepted as a batch.
+        # At most two single-problem calls replace the original pair.
+        answers = [await solve([exercise], batch_index) for exercise in batch]
+        return '\n\n'.join(answers)
+
+    answers = []
+    for index, batch in enumerate(batches, 1):
+        cached = checkpoints.get(index - 1)
+        if isinstance(cached, str) and _complete_exercise_sections(cached, batch):
+            answer, _ = cited_sources(cached, contexts, renumber=False)
+        else:
+            answer = await solve(batch, index)
+        checkpoints.save(index - 1, answer)
+        answers.append(answer)
+    return '\n\n'.join(answers)
 
 
 async def _generate_summary(contexts: list[dict[str, Any]], settings: dict[str, Any], question: str,
@@ -1302,7 +1375,7 @@ async def retry_generation(notebook_id: str, exchange_id: str, payload: RetryGen
         raise HTTPException(status_code=400, detail='这条记录没有可恢复的生成配置。')
     # Use the saved explicit source selection, never the notebook-wide default.
     saved = {**job['payload'], 'notebook_id': notebook_id, 'request_id': None}
-    if not saved.get('document_ids'):
+    if not isinstance(saved.get('document_ids'), list) or (not saved['document_ids'] and job['kind'] != 'ask'):
         raise HTTPException(status_code=400, detail='原来源选择为空，无法恢复。')
     existing = {doc['id'] for doc in db.list_documents(notebook_id)}
     if not set(saved['document_ids']).issubset(existing):

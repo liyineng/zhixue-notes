@@ -158,7 +158,7 @@ db.finish_exchange(sys.argv[1],{"answer":"刷新后继续恢复的回答","citat
   await page.waitForFunction(() => document.querySelectorAll(".message").length === 0);
   assert.equal((await api(`/api/notes?notebook_id=${notebookId}`)).notes.length, 1);
   assert.equal(await page.locator(".document-item").count(), 1);
-  await page.locator(".document-move").first().click();
+  await page.getByRole("button", { name: `移动 ${docs[0].name}`, exact: true }).click();
   await page.locator("#move-target").selectOption(other);
   await page.locator("#move-form").evaluate((form) => form.requestSubmit());
   await page.waitForFunction(() => document.querySelectorAll(".document-item").length === 0);
