@@ -90,6 +90,10 @@ FORMULA_PROMPT = r"""你是课程资料学习助手。用户要的是公式清�
 """ + MATH_FORMAT
 
 
+class OutputTruncatedError(RuntimeError):
+    """The provider explicitly reported an incomplete, length-limited output."""
+
+
 def model_configured(settings: dict[str, Any]) -> bool:
     return bool(
         str(settings.get("base_url", "")).strip()
@@ -143,23 +147,53 @@ async def select_evidence(question: str, candidates: list[dict[str, Any]],
         if batch:
             batches.append(batch)
         for batch in batches:
-            for evidence in await select_evidence(question, batch, settings, len(batch)):
+            for evidence in await _select_evidence_batch(question, batch, settings, len(batch)):
                 key = (evidence['document_id'], evidence.get('page'), evidence['text'])
                 if key not in seen:
                     seen.add(key)
                     selected.append({**evidence, 'index': len(selected) + 1})
         return selected
-    content = await chat_completion(
-        base_url=str(settings["base_url"]), api_key=str(settings.get("api_key", "")),
-        model=str(settings["model"]), temperature=0, max_tokens=max(1800, limit * 700), thinking=False,
-        messages=[{"role": "system", "content":
-            "你是资料证据筛选器。只返回 JSON 对象：{\"evidence\":[{\"source\":1,\"quote\":\"原文连续摘录\"}]}。"
-            "挑选直接支持解题原理或方法的资料，按相关性排序。不要被主机号、设备号、题号等巧合词吸引。"
-            "例如网桥自学习题应选源地址学习/目的地址查表/转发过滤的规则，而不是生成树或路由器转发表。"
-            f"最多 {limit} 条，每条摘录不超过 500 字。同一页可以摘录不同规则，但不要重复。"
-            "quote 必须是候选原文连续的逐字摘录，可把换行替换为空格，不得改写或省略中间文字。"
-            "没有直接相关证据时返回 {\"evidence\":[]}。"},
-            {"role": "user", "content": f"题目：{question}\n\n候选原文：\n{_context_text(candidates)}"}])
+    return await _select_evidence_batch(question, candidates, settings, limit)
+
+
+async def _select_evidence_batch(question: str, candidates: list[dict[str, Any]],
+                                 settings: dict[str, Any], limit: int,
+                                 quote_limit: int = 500) -> list[dict[str, Any]]:
+    try:
+        content = await chat_completion(
+            base_url=str(settings["base_url"]), api_key=str(settings.get("api_key", "")),
+            model=str(settings["model"]), temperature=0, max_tokens=max(1800, limit * 700),
+            thinking=False, json_mode=True,
+            messages=[{"role": "system", "content":
+                "你是资料证据筛选器。只返回 JSON 对象：{\"evidence\":[{\"source\":1,\"quote\":\"原文连续摘录\"}]}。"
+                "挑选直接支持解题原理或方法的资料，按相关性排序。不要被主机号、设备号、题号等巧合词吸引。"
+                "例如网桥自学习题应选源地址学习/目的地址查表/转发过滤的规则，而不是生成树或路由器转发表。"
+                f"最多 {limit} 条，每条摘录不超过 {quote_limit} 字。同一页可以摘录不同规则，但不要重复。"
+                "quote 必须是候选原文连续的逐字摘录，可把换行替换为空格，不得改写或省略中间文字。"
+                "没有直接相关证据时返回 {\"evidence\":[]}。"},
+                {"role": "user", "content": f"题目：{question}\n\n候选原文：\n{_context_text(candidates)}"}])
+    except OutputTruncatedError as exc:
+        # Retry only explicit output truncation. Each smaller request retains the
+        # original source indices; never parse a partial response or skip a half.
+        if len(candidates) > 1:
+            middle = len(candidates) // 2
+            selected, seen = [], set()
+            for batch in (candidates[:middle], candidates[middle:]):
+                evidence_batch = await _select_evidence_batch(
+                    question, batch, settings, min(limit, len(batch)), quote_limit)
+                for evidence in evidence_batch:
+                    key = (evidence['document_id'], evidence.get('page'), evidence['text'])
+                    if key not in seen:
+                        seen.add(key)
+                        selected.append({**evidence, 'index': len(selected) + 1})
+            return selected[:limit]
+        if quote_limit > 160:
+            return await _select_evidence_batch(question, candidates, settings, limit, 160)
+        candidate = candidates[0]
+        page = f"第 {candidate['page']} 页" if candidate.get('page') else '该片段'
+        raise RuntimeError(
+            f"单独核对《{candidate['document_name']}》{page}并缩短摘录后，模型输出仍达到长度上限。"
+            "本次未使用不完整的证据，请重试；若持续失败，请检查模型接口。") from exc
     parsed = _extract_json(content)
     if parsed is None or not isinstance(parsed.get("evidence"), list):
         raise RuntimeError("资料证据筛选未返回有效结果，请重试。")
@@ -283,7 +317,10 @@ async def chat_completion(
         )
     data = response.json()
     try:
-        content = data["choices"][0]["message"]["content"]
+        choice = data["choices"][0]
+        if choice.get("finish_reason") == "length":
+            raise OutputTruncatedError("模型输出达到长度上限，未完整返回结果。请在模型设置中提高最大输出长度后重试。")
+        content = choice["message"]["content"]
     except (KeyError, IndexError, TypeError) as exc:
         raise RuntimeError(
             "Model response does not contain choices[0].message.content"
@@ -293,8 +330,6 @@ async def chat_completion(
             item.get("text", "") for item in content if isinstance(item, dict)
         )
     content = str(content or "").strip()
-    if data["choices"][0].get("finish_reason") == "length":
-        raise RuntimeError("模型输出达到长度上限，未完整返回结果。请在模型设置中提高最大输出长度后重试。")
     if not content:
         raise RuntimeError("模型接口返回了空的正文，请重试；若持续出现，请检查模型或服务商状态。")
     return content

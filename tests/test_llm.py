@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, patch
 
 import httpx
 
-from app.llm import chat_completion
+from app.llm import OutputTruncatedError, chat_completion
 
 
 class CompletionTests(unittest.TestCase):
@@ -83,6 +83,16 @@ class CompletionTests(unittest.TestCase):
     def test_truncated_text_is_not_accepted_as_complete(self):
         with self.assertRaisesRegex(RuntimeError, '长度上限'):
             self.call([self.reply('截断的答案', 'length')])
+
+    def test_extraction_reports_truncation_even_when_json_looks_complete(self):
+        with self.assertRaises(OutputTruncatedError):
+            self.call([self.reply('{"evidence":[]}', 'length')], thinking=False,
+                      json_mode=True)
+
+    def test_truncation_without_content_still_has_a_typed_error(self):
+        with self.assertRaises(OutputTruncatedError):
+            self.call([{'choices': [{'message': {}, 'finish_reason': 'length'}]}],
+                      thinking=False)
 
     def test_other_providers_do_not_receive_deepseek_parameters(self):
         result, requests = self.call([self.reply('正常正文')], base_url='https://other.example/v1', thinking=False)
