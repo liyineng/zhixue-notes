@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import asyncio
+import logging
 import re
 from typing import Any
 from urllib.parse import urlparse
@@ -94,6 +95,30 @@ class OutputTruncatedError(RuntimeError):
     """The provider explicitly reported an incomplete, length-limited output."""
 
 
+class ModelConnectionError(RuntimeError):
+    """A transient connection failed after bounded retries with fresh clients."""
+
+
+def _connection_diagnostic(exc: BaseException) -> list[dict[str, Any]]:
+    """Record numeric network/TLS causes without messages, URLs or credentials."""
+    pending, seen, causes = [exc], set(), []
+    while pending and len(causes) < 12:
+        current = pending.pop(0)
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        item = {'type': type(current).__name__}
+        for name in ('errno', 'verify_code'):
+            value = getattr(current, name, None)
+            if isinstance(value, int):
+                item[name] = value
+        causes.append(item)
+        pending.extend(child for child in (current.__cause__, current.__context__) if child is not None)
+        if isinstance(current, BaseExceptionGroup):
+            pending.extend(current.exceptions)
+    return causes
+
+
 def model_configured(settings: dict[str, Any]) -> bool:
     return bool(
         str(settings.get("base_url", "")).strip()
@@ -126,7 +151,8 @@ def _context_text(contexts: list[dict[str, Any]], character_limit: int = 4000) -
 
 
 async def select_evidence(question: str, candidates: list[dict[str, Any]],
-                          settings: dict[str, Any], limit: int = 6) -> list[dict[str, Any]]:
+                          settings: dict[str, Any], limit: int = 6, *,
+                          checkpoint_factory=None, on_batch=None) -> list[dict[str, Any]]:
     if not candidates or not model_configured(settings):
         return candidates if limit == 0 else candidates[:limit]
     if limit == 0:
@@ -146,14 +172,42 @@ async def select_evidence(question: str, candidates: list[dict[str, Any]],
             used += size
         if batch:
             batches.append(batch)
-        for batch in batches:
-            for evidence in await _select_evidence_batch(question, batch, settings, len(batch)):
+        checkpoints = checkpoint_factory(batches) if checkpoint_factory else None
+        for index, batch in enumerate(batches, 1):
+            cached = _cached_evidence(checkpoints.get(index - 1), batch) if checkpoints else None
+            if on_batch:
+                on_batch(index, len(batches), batch, cached is not None)
+            evidence_batch = cached if cached is not None else await _select_evidence_batch(question, batch, settings, len(batch))
+            if checkpoints and cached is None:
+                checkpoints.save(index - 1, evidence_batch)
+            for evidence in evidence_batch:
                 key = (evidence['document_id'], evidence.get('page'), evidence['text'])
                 if key not in seen:
                     seen.add(key)
                     selected.append({**evidence, 'index': len(selected) + 1})
         return selected
     return await _select_evidence_batch(question, candidates, settings, limit)
+
+
+def _cached_evidence(cached, candidates: list[dict[str, Any]]) -> list[dict[str, Any]] | None:
+    """Rebuild cached quotations from current candidates, never cached geometry."""
+    if not isinstance(cached, list):
+        return None
+    verified = []
+    for item in cached:
+        if not isinstance(item, dict) or not isinstance(item.get('text'), str):
+            return None
+        evidence = None
+        for candidate in candidates:
+            if any(item.get(key) != candidate.get(key) for key in ('document_id', 'page', 'chunk_id', 'id')):
+                continue
+            evidence = quoted_evidence(candidate, item['text'])
+            if evidence is not None:
+                break
+        if evidence is None:
+            return None
+        verified.append({**evidence, 'index': len(verified) + 1})
+    return verified if len(verified) <= len(candidates) else None
 
 
 async def _select_evidence_batch(question: str, candidates: list[dict[str, Any]],
@@ -279,37 +333,43 @@ async def chat_completion(
         payload["thinking"] = {"type": "enabled" if thinking else "disabled"}
         if thinking:
             payload["reasoning_effort"] = "low"
-    async with httpx.AsyncClient(timeout=httpx.Timeout(180.0, connect=15.0)) as client:
-        async def request() -> httpx.Response:
-            for attempt in range(2):
-                try:
+    async def request() -> httpx.Response:
+        for attempt in range(4):
+            try:
+                # A disconnected proxy/HTTP connection must not be reused on
+                # retry. Keep the configured proxy and credentials unchanged.
+                async with httpx.AsyncClient(timeout=httpx.Timeout(180.0, connect=15.0)) as client:
                     response = await client.post(_endpoint(base_url), headers=headers, json=payload)
-                except httpx.TimeoutException as exc:
-                    if attempt:
-                        raise RuntimeError('模型接口请求超时，自动重试后仍未收到完整响应。已完成的图片识别结果会保留，请稍后重试。') from exc
-                except httpx.TransportError as exc:
-                    if attempt:
-                        raise RuntimeError('连接模型接口失败，自动重试后仍无法连接。请检查网络、代理和模型接口地址。') from exc
-                else:
-                    if response.status_code not in {429, 502, 503, 504} or attempt:
-                        return response
-                await asyncio.sleep(0.5)
-            raise RuntimeError('模型接口请求未完成，请稍后重试。')
+            except httpx.TimeoutException as exc:
+                if attempt >= 1:
+                    raise RuntimeError('模型接口请求超时，自动重试后仍未收到完整响应。已完成的识别和资料核对批次会保留，请稍后重试。') from exc
+            except httpx.TransportError as exc:
+                logging.getLogger(__name__).warning('Model connection attempt %s/4 failed: %s',
+                                                    attempt + 1, _connection_diagnostic(exc))
+                if attempt >= 3:
+                    raise ModelConnectionError(
+                        f'连接模型接口失败（{type(exc).__name__}，4 次尝试）。已完成的资料核对批次会保留，'
+                        '可按原来源重试；若持续失败，请检查网络、代理和模型接口地址。') from exc
+            else:
+                if response.status_code not in {429, 502, 503, 504} or attempt >= 1:
+                    return response
+            await asyncio.sleep((0.5, 2, 5)[attempt])
+        raise RuntimeError('模型接口请求未完成，请稍后重试。')
 
-        response = await request()
-        if response.status_code < 400 and deepseek:
-            choices = response.json().get("choices") or []
-            choice = choices[0] if choices else {}
-            message = choice.get("message") or {}
-            if choices and (not message.get("content") or
-                            (thinking is not False and choice.get("finish_reason") == "length")):
-                # Thinking tokens share the output budget. Preserve reasoning for
-                # problem solving; short extraction tasks can retry without it.
-                if thinking is True:
-                    payload["max_tokens"] = min(16384, max(8192, max_tokens * 2))
-                else:
-                    payload["thinking"] = {"type": "disabled"}
-                response = await request()
+    response = await request()
+    if response.status_code < 400 and deepseek:
+        choices = response.json().get("choices") or []
+        choice = choices[0] if choices else {}
+        message = choice.get("message") or {}
+        if choices and (not message.get("content") or
+                        (thinking is not False and choice.get("finish_reason") == "length")):
+            # Thinking tokens share the output budget. Preserve reasoning for
+            # problem solving; short extraction tasks can retry without it.
+            if thinking is True:
+                payload["max_tokens"] = min(16384, max(8192, max_tokens * 2))
+            else:
+                payload["thinking"] = {"type": "disabled"}
+            response = await request()
     if response.status_code >= 400:
         detail = response.text[:800]
         raise RuntimeError(

@@ -980,7 +980,9 @@ function addGenerationRetry(article, exchange) {
   if (!saved || exchange.result.cancelled || article.querySelector('.retry-generation')) return;
   const button = document.createElement('button'); button.type = 'button'; button.className = 'button ghost retry-generation';
   const done = Object.keys(saved.batches || {}).length;
-  button.textContent = `按原来源重试${done ? ` · 已保留 ${done}/${saved.total || done} 批` : ''}`;
+  const evidence = saved.phases?.evidence;
+  const evidenceDone = Object.keys(evidence?.batches || {}).length;
+  button.textContent = `按原来源重试${done ? ` · 已保留 ${done}/${saved.total || done} 批` : ''}${evidenceDone ? ` · 已核对 ${evidenceDone}/${evidence.total || evidenceDone} 批资料` : ''}`;
   button.addEventListener('click', async () => {
     if (state.busy) return;
     const ids = saved.payload?.document_ids;

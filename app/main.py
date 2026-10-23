@@ -934,6 +934,9 @@ async def _ask(payload: AskRequest, exchange_id: str, checkpoint_job: dict | Non
         retained_attachments = [db.get_question_image(identity) for identity in identities]
     db.start_exchange(exchange_id, payload.notebook_id or "default", question,
                       [_public_image(item) for item in retained_attachments if item], reply_to)
+    if top_k == 0 and model_configured(settings):
+        batch_jobs.begin(exchange_id, 'ask', {**payload.model_dump(exclude={'request_id'}),
+                         'document_ids': [doc['id'] for doc in selected_documents]}, checkpoint_job)
 
     try:
         db.set_generation_progress(exchange_id, 'question', '读取问题附件' if images else '分析问题',
@@ -961,11 +964,20 @@ async def _ask(payload: AskRequest, exchange_id: str, checkpoint_job: dict | Non
         if reference_hint:
             effective_question += '\n\n用户所指的历史引用定位（编号不是页码，本次依据会重新读取原文）：\n' + reference_hint
         db.set_generation_progress(exchange_id, 'analysis', '规划检索', '正在判断是否需要资料，并提炼检索关键词。')
-        analysis = await analyze_question(
-            effective_question,
-            document_names,
-            settings,
-        )
+        planner = batch_jobs.Checkpoints(exchange_id, settings,
+            ['retrieval_plan_v1', effective_question, payload.notebook_id],
+            [[{'document_ids': sorted(document_ids), 'document_names': document_names}]], phase='analysis') if top_k == 0 and model_configured(settings) else None
+        cached_analysis = planner.get(0) if planner else None
+        if (isinstance(cached_analysis, dict) and cached_analysis.get('intent') in ('chat', 'summary', 'question')
+                and isinstance(cached_analysis.get('needs_retrieval'), bool)
+                and isinstance(cached_analysis.get('search_query'), str)
+                and isinstance(cached_analysis.get('keywords'), list)
+                and all(isinstance(word, str) for word in cached_analysis['keywords'])):
+            analysis = dict(cached_analysis)
+        else:
+            analysis = await analyze_question(effective_question, document_names, settings)
+            if planner:
+                planner.save(0, analysis)
         formula_inventory = is_formula_inventory(question)
         if formula_inventory:
             analysis.update(intent='summary', needs_retrieval=True)
@@ -1055,7 +1067,20 @@ async def _ask(payload: AskRequest, exchange_id: str, checkpoint_job: dict | Non
                         db.set_generation_progress(exchange_id, 'evidence', '核对全部相关片段',
                             f'正在分批核对 {len(candidates)} 个匹配片段，不设片段数上限。',
                             activity=source_activity(candidates, retrieval_query))
-                    contexts = await select_evidence(effective_question, candidates, settings, top_k)
+                    if top_k == 0 and model_configured(settings):
+                        def evidence_checkpoints(batches):
+                            return batch_jobs.Checkpoints(exchange_id, settings,
+                                ['evidence_v1', effective_question, payload.notebook_id, sorted(document_ids), top_k],
+                                batches, phase='evidence')
+                        def evidence_progress(index, total, batch, reused):
+                            detail = (f'正在恢复已核对的第 {index}/{total} 批资料。' if reused else
+                                      f'正在核对第 {index}/{total} 批资料；此前 {index - 1} 批已完成并保留。')
+                            db.set_generation_progress(exchange_id, 'evidence', '核对全部相关片段', detail,
+                                                       activity=source_activity(batch, retrieval_query))
+                        contexts = await select_evidence(effective_question, candidates, settings, top_k,
+                            checkpoint_factory=evidence_checkpoints, on_batch=evidence_progress)
+                    else:
+                        contexts = await select_evidence(effective_question, candidates, settings, top_k)
         retrieval_hits = len(contexts)
         coverage = _summary_scope(contexts, selected_documents) if analysis["intent"] == "summary" else None
         if coverage is not None:
